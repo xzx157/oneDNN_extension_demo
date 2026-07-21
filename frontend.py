@@ -1,9 +1,12 @@
 import copy
+import warnings
 from dataclasses import dataclass
 from typing import Dict, Type
 
 import torch
+import torch.fx.experimental.optimization as optimization
 from torch import nn
+from torch.nn.modules.batchnorm import _BatchNorm
 
 from .modules import _ODNNBatchNorm2d, _ODNNConv2d, _ODNNLinear, _ODNNReLU
 from .prepack_modules import (
@@ -35,10 +38,12 @@ WEIGHT_PREPACK_REPLACEMENT_TABLE: Dict[Type[nn.Module], Type[nn.Module]] = {
 class OptimizeReport:
     total_modules: int
     replaced_modules: int
+    folded_batchnorms: int
     channels_last: bool
     backend: str = "oneDNN-demo"
     replace_modules: bool = True
     weight_prepack: bool = False
+    conv_bn_folding: bool = True
     sample_input: bool = False
     cpp_op_context: bool = False
 
@@ -50,6 +55,7 @@ def optimize(
     channels_last: bool = True,
     replace_modules: bool = True,
     weight_prepack: bool = False,
+    conv_bn_folding: bool = True,
     sample_input=None,
     cpp_op_context: bool = False,
     return_report: bool = False,
@@ -60,6 +66,9 @@ def optimize(
     weight_prepack=True converts Conv2d and Linear modules with
     torch.utils.mkldnn.to_mkldnn() during optimize(), so their weights are
     reordered once and reused by subsequent forward calls.
+
+    conv_bn_folding=True folds Conv+BatchNorm pairs in eval mode before module
+    replacement and optional prepack warmup.
     """
 
     if not torch.backends.mkldnn.is_available():
@@ -71,6 +80,10 @@ def optimize(
 
     opt_model = model if inplace else copy.deepcopy(model)
     opt_model.eval()
+
+    folded_batchnorms = 0
+    if conv_bn_folding:
+        opt_model, folded_batchnorms = _fold_conv_bn(opt_model)
 
     if channels_last:
         _convert_conv_weight_to_channels_last(opt_model)
@@ -100,9 +113,11 @@ def optimize(
     report = OptimizeReport(
         total_modules=stats["total"],
         replaced_modules=stats["replaced"],
+        folded_batchnorms=folded_batchnorms,
         channels_last=channels_last,
         replace_modules=replace_modules,
         weight_prepack=weight_prepack,
+        conv_bn_folding=conv_bn_folding,
         sample_input=sample_input is not None,
         cpp_op_context=cpp_op_context,
         backend=(
@@ -165,6 +180,26 @@ def _convert_conv_weight_to_channels_last(module: nn.Module) -> None:
             child.weight.data = child.weight.detach().clone().contiguous(
                 memory_format=torch.channels_last
             )
+
+
+def _count_batchnorm_modules(module: nn.Module) -> int:
+    return sum(1 for child in module.modules() if isinstance(child, _BatchNorm))
+
+
+def _fold_conv_bn(module: nn.Module):
+    """Fold Conv+BatchNorm in eval mode, similar to ipex.optimize frontend path."""
+
+    before = _count_batchnorm_modules(module)
+    try:
+        fused = optimization.fuse(module, inplace=True)
+    except BaseException as error:
+        warnings.warn(
+            f"Conv+BN folding failed during optimize: {type(error).__name__}: {error}"
+        )
+        return module, 0
+
+    after = _count_batchnorm_modules(fused)
+    return fused, max(before - after, 0)
 
 
 def _record_sample_input_sizes(model: nn.Module, sample_input) -> None:
