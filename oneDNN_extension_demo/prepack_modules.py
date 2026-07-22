@@ -7,8 +7,16 @@ from . import prepack_backend
 
 
 class _ODNNPrepackedConv2d(nn.Module):
-    def __init__(self, module, *, channels_last=False, cpp_op_context=False):
+    def __init__(
+        self,
+        module,
+        *,
+        channels_last=False,
+        cpp_op_context=False,
+        preserve_mkldnn_layout=False,
+    ):
         super().__init__()
+        self.preserve_mkldnn_layout = preserve_mkldnn_layout
         self.ctx = ODNNConvolutionOpContext.create_context(
             module,
             channels_last=channels_last,
@@ -17,7 +25,10 @@ class _ODNNPrepackedConv2d(nn.Module):
         )
 
     def forward(self, input):
-        return self.ctx.run(input, keep_layout=True)
+        return self.ctx.run(
+            input,
+            keep_layout=self.preserve_mkldnn_layout,
+        )
 
 
 class _ODNNPrepackedLinear(nn.Module):

@@ -1,5 +1,5 @@
 import copy
-import warnings
+import os
 from dataclasses import dataclass
 from typing import Dict, Type
 
@@ -17,6 +17,7 @@ from .prepack_modules import (
     _ODNNDenseBoundary,
 )
 from .graph_mode import GraphCaptureLite, _RunMethod
+from .prepack_context import ODNNConvolutionOpContext
 
 
 MODULE_REPLACEMENT_TABLE: Dict[Type[nn.Module], Type[nn.Module]] = {
@@ -29,6 +30,10 @@ MODULE_REPLACEMENT_TABLE: Dict[Type[nn.Module], Type[nn.Module]] = {
 WEIGHT_PREPACK_REPLACEMENT_TABLE: Dict[Type[nn.Module], Type[nn.Module]] = {
     nn.Conv2d: _ODNNPrepackedConv2d,
     nn.Linear: _ODNNPrepackedLinear,
+}
+
+MKLDNN_LAYOUT_REPLACEMENT_TABLE: Dict[Type[nn.Module], Type[nn.Module]] = {
+    **WEIGHT_PREPACK_REPLACEMENT_TABLE,
     nn.BatchNorm2d: _ODNNMKLDNNBatchNorm2d,
     nn.ReLU: _ODNNMKLDNNReLU,
     nn.AdaptiveAvgPool2d: _ODNNDenseBoundary,
@@ -48,6 +53,9 @@ class OptimizeReport:
     linear_bn_folding: bool = True
     sample_input: bool = False
     cpp_op_context: bool = False
+    preserve_mkldnn_layout: bool = False
+    native_dnnl_contexts: int = 0
+    packed_weight_bytes: int = 0
     graph_mode: bool = False
     capture_method: str = ""
 
@@ -63,6 +71,7 @@ def optimize(
     linear_bn_folding: bool = True,
     sample_input=None,
     cpp_op_context: bool = False,
+    preserve_mkldnn_layout: bool = False,
     dtype=None,
     graph_mode: bool = False,
     return_report: bool = False,
@@ -74,6 +83,11 @@ def optimize(
     torch.utils.mkldnn.to_mkldnn() during optimize(), so their weights are
     reordered once and reused by subsequent forward calls.
 
+    preserve_mkldnn_layout=True is an experimental sequential-model mode that
+    keeps opaque MKLDNN activations across supported modules. Leave it disabled
+    for models with residual additions, concatenation, resize, or other dense
+    tensor graph operations.
+
     conv_bn_folding=True folds Conv+BatchNorm pairs in eval mode before module
     replacement and optional prepack warmup.
 
@@ -81,7 +95,7 @@ def optimize(
     using FX pattern matching before module replacement.
 
     graph_mode=True wraps model.forward with lazy JIT graph capture
-    (JIT trace+freeze → dynamo → eager fallback).  dtype=torch.bfloat16
+    (JIT trace+freeze -> dynamo -> eager fallback). dtype=torch.bfloat16
     or torch.float16 enables CPU autocast for mixed-precision inference.
     """
 
@@ -91,6 +105,15 @@ def optimize(
         raise ValueError("weight_prepack=True requires replace_modules=True.")
     if cpp_op_context and not weight_prepack:
         raise ValueError("cpp_op_context=True requires weight_prepack=True.")
+    if preserve_mkldnn_layout and not weight_prepack:
+        raise ValueError(
+            "preserve_mkldnn_layout=True requires weight_prepack=True."
+        )
+    if preserve_mkldnn_layout and cpp_op_context:
+        raise ValueError(
+            "preserve_mkldnn_layout=True is incompatible with the strided "
+            "C++ OpContext path."
+        )
 
     opt_model = model if inplace else copy.deepcopy(model)
     opt_model.eval()
@@ -109,16 +132,20 @@ def optimize(
 
     stats = {"total": 0, "replaced": 0}
     if replace_modules:
-        replacement_table = (
-            WEIGHT_PREPACK_REPLACEMENT_TABLE
-            if weight_prepack
-            else MODULE_REPLACEMENT_TABLE
-        )
+        if weight_prepack:
+            replacement_table = (
+                MKLDNN_LAYOUT_REPLACEMENT_TABLE
+                if preserve_mkldnn_layout
+                else WEIGHT_PREPACK_REPLACEMENT_TABLE
+            )
+        else:
+            replacement_table = MODULE_REPLACEMENT_TABLE
         opt_model = _replace_modules(
             opt_model,
             channels_last=channels_last,
             replacement_table=replacement_table,
             cpp_op_context=cpp_op_context,
+            preserve_mkldnn_layout=preserve_mkldnn_layout,
             stats=stats,
         )
     else:
@@ -126,6 +153,24 @@ def optimize(
 
     if weight_prepack and sample_input is not None:
         _warmup_model(opt_model, sample_input)
+
+    native_contexts = 0
+    packed_weight_bytes = 0
+    if cpp_op_context:
+        for child in opt_model.modules():
+            if isinstance(child, ODNNConvolutionOpContext):
+                if child.uses_native_dnnl():
+                    native_contexts += 1
+                    packed_weight_bytes += child.packed_weight_bytes()
+        if (
+            os.environ.get("ODNN_DEMO_REQUIRE_NATIVE_DNNL") == "1"
+            and not native_contexts
+        ):
+            raise RuntimeError(
+                "Native oneDNN was required but no Conv2d context was created. "
+                "Check DNNL_ROOT (or DNNL_INCLUDE_DIR/DNNL_LIBRARY) and "
+                "provide sample_input."
+            )
 
     capture_method = ""
     if graph_mode:
@@ -144,10 +189,15 @@ def optimize(
         linear_bn_folding=linear_bn_folding,
         sample_input=sample_input is not None,
         cpp_op_context=cpp_op_context,
+        preserve_mkldnn_layout=preserve_mkldnn_layout,
+        native_dnnl_contexts=native_contexts,
+        packed_weight_bytes=packed_weight_bytes,
         graph_mode=graph_mode,
         capture_method=capture_method,
         backend=(
-            "oneDNN-cpp-prepack"
+            "native-oneDNN-prepack"
+            if native_contexts
+            else "ATen-strided-cpp-context"
             if cpp_op_context
             else "oneDNN-prepack"
             if weight_prepack
@@ -167,6 +217,7 @@ def _replace_modules(
     channels_last: bool,
     replacement_table,
     cpp_op_context: bool,
+    preserve_mkldnn_layout: bool,
     stats,
 ) -> nn.Module:
     stats["total"] += 1
@@ -179,6 +230,7 @@ def _replace_modules(
                     module,
                     channels_last=channels_last,
                     cpp_op_context=cpp_op_context,
+                    preserve_mkldnn_layout=preserve_mkldnn_layout,
                 )
             return replacement_cls(module, channels_last=channels_last)
         if replacement_cls is _ODNNPrepackedLinear:
@@ -194,6 +246,7 @@ def _replace_modules(
                 channels_last=channels_last,
                 replacement_table=replacement_table,
                 cpp_op_context=cpp_op_context,
+                preserve_mkldnn_layout=preserve_mkldnn_layout,
                 stats=stats,
             ),
         )
@@ -246,7 +299,7 @@ def _fold_linear_bn(module: nn.Module):
 
 
 def _fuse_adjacent_pairs(parent, *, leader_cls, follower_cls, fuse_fn):
-    """Walk the module tree and fuse consecutive leader→follower children in-place.
+    """Walk the tree and fuse consecutive leader/follower children in-place.
 
     This operates on the *immediate children* of every submodule, so it handles
     nn.Sequential and custom containers equally well without any tracing.
@@ -255,7 +308,7 @@ def _fuse_adjacent_pairs(parent, *, leader_cls, follower_cls, fuse_fn):
     for child in parent.children():
         _fuse_adjacent_pairs(child, leader_cls=leader_cls, follower_cls=follower_cls, fuse_fn=fuse_fn)
 
-    # OrderedDict preserves insertion order → matches execution order
+    # Module registration order normally matches execution order in containers.
     names = list(parent._modules.keys())
     i = 0
     while i < len(names) - 1:

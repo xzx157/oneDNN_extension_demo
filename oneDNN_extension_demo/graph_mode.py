@@ -1,4 +1,4 @@
-"""惰性图捕获：JIT trace → dynamo → eager 三级级联回退。"""
+"""Lazy graph capture with JIT, Dynamo, and eager fallback tiers."""
 
 import functools
 import threading
@@ -9,7 +9,8 @@ from torch.jit._trace import TracerWarning
 
 
 class _RunMethod:
-    """记录当前图捕获使用了哪种方式。"""
+    """Graph execution methods used by :class:`GraphCaptureLite`."""
+
     JIT = 1
     DYNAMO = 2
     EAGER = 3
@@ -17,6 +18,7 @@ class _RunMethod:
     @classmethod
     def label(cls, method):
         return {
+            None: "pending",
             cls.JIT: "jit",
             cls.DYNAMO: "dynamo",
             cls.EAGER: "eager",
@@ -24,89 +26,85 @@ class _RunMethod:
 
 
 class GraphCaptureLite:
-    """
-    惰性图捕获包装器。
+    """Capture a model lazily on its first forward call.
 
-    不在 optimize() 时 trace，而在第一次 forward() 调用时 trace。
-    用户不需要传 sample_input，接口更简洁。
-
-    级联策略：
-      Tier 1: torch.jit.trace + freeze → 性能最好
-      Tier 2: torch._dynamo + JIT backend → 处理动态控制流
-      Tier 3: eager fallback             → 兜底
+    Capture first attempts ``torch.jit.trace`` and freeze, then Dynamo with a
+    JIT backend, and finally falls back to the original eager ``forward``.
     """
 
     def __init__(self, model: torch.nn.Module, dtype=None):
-        self.model = model          # 模型引用（不 deepcopy）
-        self.dtype = dtype          # 混合精度类型，None 表示不做
-        self.method = None          # None=未捕获, JIT/DYNAMO/EAGER
+        self.model = model
+        self.dtype = dtype
+        self.method = None
         self.lock = threading.Lock()
+        self._original_forward = None
+        self._captured_callable = None
 
     @staticmethod
-    def _jit_compile(gm, example_inputs):
-        """dynamo compiler backend：对 FX GraphModule 做 JIT trace + freeze。"""
+    def _jit_compile(graph_module, example_inputs):
+        """Compile a Dynamo FX graph with JIT when possible."""
         try:
             with torch.no_grad():
-                traced = torch.jit.trace(gm.eval(), example_inputs)
-                traced = torch.jit.freeze(traced)
-            return traced
+                traced = torch.jit.trace(graph_module.eval(), example_inputs)
+                return torch.jit.freeze(traced)
         except Exception:
-            return gm
+            return graph_module
 
-    def _try_capture(self, *input, **kwargs):
-        """级联尝试 JIT → dynamo → eager。"""
-
-        # ---- Tier 1: JIT trace + freeze ----
+    def _try_capture(self, *inputs, **kwargs):
         try:
             with warnings.catch_warnings():
                 warnings.filterwarnings("error", category=TracerWarning)
-                traced = torch.jit.trace(self.model.eval(), input).eval()
+                traced = torch.jit.trace(self.model.eval(), inputs).eval()
                 traced = torch.jit.freeze(traced)
-            output = traced(*input, **kwargs)
-            self.model = traced
-            self.method = _RunMethod.JIT
+            output = traced(*inputs, **kwargs)
+            self._captured_callable = traced
+            self._set_method(_RunMethod.JIT)
             return output
         except Exception:
             pass
 
-        # ---- Tier 2: torch._dynamo + JIT backend ----
         try:
             torch._dynamo.reset()
-            dynamo_model = torch._dynamo.optimize(
+            dynamo_forward = torch._dynamo.optimize(
                 self._jit_compile, dynamic=True
-            )(self.model)
-            output = dynamo_model(*input, **kwargs)
-            self.model = dynamo_model
-            self.method = _RunMethod.DYNAMO
+            )(self._original_forward)
+            output = dynamo_forward(*inputs, **kwargs)
+            self._captured_callable = dynamo_forward
+            self._set_method(_RunMethod.DYNAMO)
             return output
         except Exception:
-            pass
+            torch._dynamo.reset()
 
-        # ---- Tier 3: eager fallback ----
-        torch._dynamo.reset()
-        self.method = _RunMethod.EAGER
-        return self.model(*input, **kwargs)
+        self._captured_callable = self._original_forward
+        self._set_method(_RunMethod.EAGER)
+        return self._captured_callable(*inputs, **kwargs)
+
+    def _set_method(self, method):
+        self.method = method
+        report = getattr(self.model, "optimize_report", None)
+        if report is not None:
+            report.capture_method = _RunMethod.label(method)
 
     def __call__(self, original_forward):
-        """作为装饰器使用：model.forward = GraphCaptureLite(model)(model.forward)"""
+        """Wrap ``original_forward`` with thread-safe lazy capture."""
+        self._original_forward = original_forward
 
         @functools.wraps(original_forward)
-        def captured_forward(*input, **kwargs):
-            # 如果外层已经在 trace 这个模型，不要再套一层
+        def captured_forward(*inputs, **kwargs):
             if torch.jit.is_tracing():
-                return original_forward(*input, **kwargs)
+                return original_forward(*inputs, **kwargs)
 
-            with torch.amp.autocast('cpu',
-                enabled=(self.dtype in (torch.bfloat16, torch.float16)),
+            with torch.amp.autocast(
+                "cpu",
+                enabled=self.dtype in (torch.bfloat16, torch.float16),
                 dtype=self.dtype,
             ):
                 if self.method is not None:
-                    return self.model(*input, **kwargs)
+                    return self._captured_callable(*inputs, **kwargs)
 
-                # 双重检查锁：防止多线程重复捕获
                 with self.lock:
                     if self.method is not None:
-                        return self.model(*input, **kwargs)
-                    return self._try_capture(*input, **kwargs)
+                        return self._captured_callable(*inputs, **kwargs)
+                    return self._try_capture(*inputs, **kwargs)
 
         return captured_forward

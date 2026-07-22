@@ -9,6 +9,50 @@ import torch
 _LOADED = False
 
 
+def _find_dnnl_config():
+    root = os.environ.get("DNNL_ROOT")
+    include_dir = os.environ.get("DNNL_INCLUDE_DIR")
+    library = os.environ.get("DNNL_LIBRARY")
+
+    if root:
+        root_path = Path(root).expanduser().resolve()
+        include_dir = include_dir or str(root_path / "include")
+        if library is None:
+            candidates = (
+                [root_path / "lib" / "dnnl.lib"]
+                if os.name == "nt"
+                else [
+                    root_path / "lib" / "libdnnl.so",
+                    root_path / "lib64" / "libdnnl.so",
+                    root_path / "lib" / "libdnnl.dylib",
+                ]
+            )
+            library = next(
+                (str(path) for path in candidates if path.is_file()), None
+            )
+
+    if bool(include_dir) != bool(library):
+        raise RuntimeError(
+            "Native oneDNN requires both DNNL_INCLUDE_DIR and DNNL_LIBRARY "
+            "(or a DNNL_ROOT containing include/ and lib/)."
+        )
+    if not include_dir:
+        return [], [], False
+
+    include_path = Path(include_dir).expanduser().resolve()
+    library_path = Path(library).expanduser().resolve()
+    header = include_path / "oneapi" / "dnnl" / "dnnl.hpp"
+    if not header.is_file():
+        raise RuntimeError(f"oneDNN header not found: {header}")
+    if not library_path.is_file():
+        raise RuntimeError(f"oneDNN library not found: {library_path}")
+
+    ldflags = [str(library_path)]
+    if os.name != "nt":
+        ldflags.append(f"-Wl,-rpath,{library_path.parent}")
+    return [str(include_path)], ldflags, True
+
+
 def _check_build_tools():
     missing = []
     if os.name == "nt":
@@ -75,13 +119,23 @@ def load_cpp_extension():
 
     source = Path(__file__).resolve().parent / "csrc" / "op_context.cpp"
     extra_cflags = ["/O2"] if os.name == "nt" else ["-O3"]
+    include_paths, extra_ldflags, use_native_dnnl = _find_dnnl_config()
+    if use_native_dnnl:
+        extra_cflags.append(
+            "/DODNN_DEMO_USE_DNNL=1"
+            if os.name == "nt"
+            else "-DODNN_DEMO_USE_DNNL=1"
+        )
     architecture = platform.machine().lower() or "unknown"
-    extension_name = f"odnn_demo_op_context_{architecture}_v2"
+    backend = "dnnl" if use_native_dnnl else "aten"
+    extension_name = f"odnn_demo_op_context_{architecture}_{backend}_v8"
     try:
         load(
             name=extension_name,
             sources=[str(source)],
             extra_cflags=extra_cflags,
+            extra_include_paths=include_paths,
+            extra_ldflags=extra_ldflags,
             is_python_module=False,
             verbose=os.environ.get("ODNN_DEMO_CPP_VERBOSE") == "1",
         )

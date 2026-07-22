@@ -6,6 +6,7 @@ from torch import nn
 
 import oneDNN_extension_demo as odnn
 from oneDNN_extension_demo.frontend import inspect_modules
+from oneDNN_extension_demo.prepack_context import ODNNConvolutionOpContext
 
 
 class TinyCNN(nn.Module):
@@ -63,6 +64,24 @@ def create_ipex_o1_model(model, sample_input):
         return None, f"{type(error).__name__}: {error}"
 
 
+def create_ipex_prepack_model(model, sample_input):
+    try:
+        import intel_extension_for_pytorch as ipex
+
+        return (
+            ipex.optimize(
+                model,
+                level="O0",
+                inplace=False,
+                weights_prepack=True,
+                sample_input=sample_input,
+            ),
+            None,
+        )
+    except (ImportError, OSError, RuntimeError, TypeError) as error:
+        return None, f"{type(error).__name__}: {error}"
+
+
 def create_cpp_prepack_model(model, sample_input):
     try:
         return (
@@ -77,6 +96,21 @@ def create_cpp_prepack_model(model, sample_input):
         )
     except (ImportError, OSError, RuntimeError) as error:
         return None, f"{type(error).__name__}: {error}"
+
+
+def collect_cpp_runtime_stats(model):
+    stats = {"native_runs": 0, "fallback_runs": 0, "native_hit_rate": 0.0}
+    for module in model.modules():
+        if not isinstance(module, ODNNConvolutionOpContext):
+            continue
+        module_stats = module.runtime_stats()
+        stats["native_runs"] += module_stats["native_runs"]
+        stats["fallback_runs"] += module_stats["fallback_runs"]
+
+    total_runs = stats["native_runs"] + stats["fallback_runs"]
+    if total_runs:
+        stats["native_hit_rate"] = stats["native_runs"] / total_runs
+    return stats
 
 
 def main():
@@ -110,6 +144,9 @@ def main():
         model, x_channels_last
     )
     ipex_o1_model, ipex_o1_error = create_ipex_o1_model(model, x_channels_last)
+    ipex_prepack_model, ipex_prepack_error = create_ipex_prepack_model(
+        model, x_channels_last
+    )
     opt_model, report = odnn.optimize(model, channels_last=True, return_report=True)
     opt_model_nchw, report_nchw = odnn.optimize(
         model, channels_last=False, return_report=True
@@ -128,6 +165,11 @@ def main():
         out_ipex_o1 = (
             ipex_o1_model(x_channels_last) if ipex_o1_model is not None else None
         )
+        out_ipex_prepack = (
+            ipex_prepack_model(x_channels_last)
+            if ipex_prepack_model is not None
+            else None
+        )
 
     baseline_ms = benchmark(model, x)
     channels_last_ms = benchmark(channels_last_model, x_channels_last)
@@ -142,6 +184,11 @@ def main():
     ipex_o1_ms = (
         benchmark(ipex_o1_model, x_channels_last)
         if ipex_o1_model is not None
+        else None
+    )
+    ipex_prepack_ms = (
+        benchmark(ipex_prepack_model, x_channels_last)
+        if ipex_prepack_model is not None
         else None
     )
 
@@ -159,6 +206,10 @@ def main():
             "Max abs diff C++ OpContext:",
             (ref - out_cpp_prepacked).abs().max().item(),
         )
+        print(
+            "C++ OpContext runtime stats:",
+            collect_cpp_runtime_stats(cpp_prepacked_model),
+        )
     else:
         print("C++ OpContext skipped:", cpp_prepacked_error)
     print("Max abs diff:", (ref - out).abs().max().item())
@@ -167,6 +218,13 @@ def main():
         print("Max abs diff IPEX O1:", (ref - out_ipex_o1).abs().max().item())
     else:
         print("IPEX O1 skipped:", ipex_o1_error)
+    if out_ipex_prepack is not None:
+        print(
+            "Max abs diff IPEX O0 + weight prepack:",
+            (ref - out_ipex_prepack).abs().max().item(),
+        )
+    else:
+        print("IPEX O0 + weight prepack skipped:", ipex_prepack_error)
     print("Benchmark input:", tuple(x.shape))
     print(f"Baseline PyTorch: {baseline_ms:.3f} ms/iter")
     report_speedup("Channels-last only", baseline_ms, channels_last_ms)
@@ -177,6 +235,12 @@ def main():
     report_speedup("ODNN explicit MKLDNN no channels_last", baseline_ms, odnn_nchw_ms)
     if ipex_o1_ms is not None:
         report_speedup("IPEX O1", baseline_ms, ipex_o1_ms)
+    if ipex_prepack_ms is not None:
+        report_speedup(
+            "IPEX O0 + weight prepack",
+            baseline_ms,
+            ipex_prepack_ms,
+        )
     print("Converted modules:")
     for name, class_name in inspect_modules(opt_model).items():
         if class_name.startswith("_ODNN"):

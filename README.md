@@ -56,8 +56,23 @@ model = odnn.optimize(
 ```
 
 The C++ contexts own references to the packed MKLDNN weights and execute ATen's
-MKLDNN convolution/linear kernels. They demonstrate the IPEX-style context
-lifecycle without depending on IPEX's private C++ implementation.
+strided convolution/linear kernels by default. They demonstrate the IPEX-style
+context lifecycle without depending on IPEX's private C++ implementation.
+
+To enable persistent native oneDNN Conv2d packing, point the build at a oneDNN
+development installation before the extension is loaded:
+
+```bash
+export DNNL_ROOT=/opt/oneDNN
+# Or set DNNL_INCLUDE_DIR and DNNL_LIBRARY separately.
+export ODNN_DEMO_REQUIRE_NATIVE_DNNL=1
+python example.py
+```
+
+With a representative `sample_input`, supported FP32 Conv2d contexts create a
+shape-specific primitive and reorder weights once. A different input shape or
+unsupported configuration safely uses the strided ATen fallback. Linear uses
+the strided ATen path in the current native extension.
 
 The prepacked replacement table is:
 
@@ -68,10 +83,43 @@ nn.Linear -> _ODNNPrepackedLinear
           -> ODNNLinearOpContext -> MkldnnLinear
 ```
 
-This path prepackages weights only. Activations are still converted to MKLDNN
-at the first prepacked wrapper boundary. Conv2d, BatchNorm2d, and ReLU keep the
-MKLDNN layout across consecutive operations. Unsupported boundaries such as
-AdaptiveAvgPool2d convert back to dense, and Linear returns a dense output.
+This path prepackages weights only. By default each wrapper converts its output
+back to dense layout, which is safe for eager models containing residual adds,
+concatenation, resizing, splitting, or other operations that do not accept
+opaque MKLDNN tensors.
+
+For a known sequential Conv2d/BatchNorm2d/ReLU graph, continuous opaque layout
+can be enabled explicitly:
+
+```python
+model = odnn.optimize(
+    model,
+    weight_prepack=True,
+    preserve_mkldnn_layout=True,
+)
+```
+
+This experimental mode inserts a dense boundary for AdaptiveAvgPool2d, but is
+not graph-safe for arbitrary models. It cannot be combined with the strided
+`cpp_op_context=True` path.
+
+By default, adjacent Conv2d+BatchNorm2d and Linear+BatchNorm pairs are folded
+before replacement. Disable these independently with `conv_bn_folding=False`
+or `linear_bn_folding=False`.
+
+Lazy graph capture and CPU mixed precision are also available:
+
+```python
+model = odnn.optimize(
+    model,
+    graph_mode=True,
+    dtype=torch.bfloat16,
+)
+```
+
+The first forward attempts JIT trace/freeze, then Dynamo, and finally a safe
+eager fallback. The selected method is recorded by the graph wrapper after the
+first call.
 
 The default replacement path does not call `torch.utils.mkldnn.to_mkldnn()`.
 It uses an explicit module replacement table:
@@ -94,7 +142,7 @@ replace the backend-specific implementation with registered Kunpeng operators.
 Run:
 
 ```bash
-python -m oneDNN_extension_demo.example
+python example.py
 ```
 
 On Ubuntu/Debian, install the C++ build tools before enabling
@@ -112,7 +160,7 @@ C++ path:
 ```bash
 export TORCH_EXTENSIONS_DIR=/tmp/odnn_demo_extensions
 export ODNN_DEMO_CPP_VERBOSE=1
-python -m oneDNN_extension_demo.example
+python example.py
 ```
 
 The default and Python prepack paths remain Python-only. The optional C++
