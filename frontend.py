@@ -4,9 +4,11 @@ from dataclasses import dataclass
 from typing import Dict, Type
 
 import torch
+import torch.fx as fx
 import torch.fx.experimental.optimization as optimization
 from torch import nn
 from torch.nn.modules.batchnorm import _BatchNorm
+from torch.nn.utils.fusion import fuse_linear_bn_eval
 
 from .modules import _ODNNBatchNorm2d, _ODNNConv2d, _ODNNLinear, _ODNNReLU
 from .prepack_modules import (
@@ -16,6 +18,7 @@ from .prepack_modules import (
     _ODNNPrepackedLinear,
     _ODNNDenseBoundary,
 )
+from .graph_mode import GraphCaptureLite, _RunMethod
 
 
 MODULE_REPLACEMENT_TABLE: Dict[Type[nn.Module], Type[nn.Module]] = {
@@ -44,8 +47,11 @@ class OptimizeReport:
     replace_modules: bool = True
     weight_prepack: bool = False
     conv_bn_folding: bool = True
+    linear_bn_folding: bool = True
     sample_input: bool = False
     cpp_op_context: bool = False
+    graph_mode: bool = False
+    capture_method: str = ""
 
 
 def optimize(
@@ -56,8 +62,11 @@ def optimize(
     replace_modules: bool = True,
     weight_prepack: bool = False,
     conv_bn_folding: bool = True,
+    linear_bn_folding: bool = True,
     sample_input=None,
     cpp_op_context: bool = False,
+    dtype=None,
+    graph_mode: bool = False,
     return_report: bool = False,
 ):
     """Apply layout conversion and optional oneDNN module replacement.
@@ -69,6 +78,13 @@ def optimize(
 
     conv_bn_folding=True folds Conv+BatchNorm pairs in eval mode before module
     replacement and optional prepack warmup.
+
+    linear_bn_folding=True folds Linear+BatchNorm(1d/2d/3d) pairs in eval mode
+    using FX pattern matching before module replacement.
+
+    graph_mode=True wraps model.forward with lazy JIT graph capture
+    (JIT trace+freeze → dynamo → eager fallback).  dtype=torch.bfloat16
+    or torch.float16 enables CPU autocast for mixed-precision inference.
     """
 
     if not torch.backends.mkldnn.is_available():
@@ -84,6 +100,9 @@ def optimize(
     folded_batchnorms = 0
     if conv_bn_folding:
         opt_model, folded_batchnorms = _fold_conv_bn(opt_model)
+    if linear_bn_folding:
+        opt_model, folded_linear_bn = _fold_linear_bn(opt_model)
+        folded_batchnorms += folded_linear_bn
 
     if channels_last:
         _convert_conv_weight_to_channels_last(opt_model)
@@ -110,6 +129,12 @@ def optimize(
     if weight_prepack and sample_input is not None:
         _warmup_model(opt_model, sample_input)
 
+    capture_method = ""
+    if graph_mode:
+        wrapper = GraphCaptureLite(opt_model, dtype=dtype)
+        opt_model.forward = wrapper(opt_model.forward)
+        capture_method = _RunMethod.label(wrapper.method)
+
     report = OptimizeReport(
         total_modules=stats["total"],
         replaced_modules=stats["replaced"],
@@ -118,8 +143,11 @@ def optimize(
         replace_modules=replace_modules,
         weight_prepack=weight_prepack,
         conv_bn_folding=conv_bn_folding,
+        linear_bn_folding=linear_bn_folding,
         sample_input=sample_input is not None,
         cpp_op_context=cpp_op_context,
+        graph_mode=graph_mode,
+        capture_method=capture_method,
         backend=(
             "oneDNN-cpp-prepack"
             if cpp_op_context
@@ -195,6 +223,61 @@ def _fold_conv_bn(module: nn.Module):
     except BaseException as error:
         warnings.warn(
             f"Conv+BN folding failed during optimize: {type(error).__name__}: {error}"
+        )
+        return module, 0
+
+    after = _count_batchnorm_modules(fused)
+    return fused, max(before - after, 0)
+
+
+def _fold_linear_bn(module: nn.Module):
+    """Fold Linear+BatchNorm in eval mode with FX pattern matching."""
+
+    before = _count_batchnorm_modules(module)
+    patterns = [
+        (nn.Linear, nn.BatchNorm1d),
+        (nn.Linear, nn.BatchNorm2d),
+        (nn.Linear, nn.BatchNorm3d),
+    ]
+
+    try:
+        fx_model = fx.symbolic_trace(module)
+    except BaseException as error:
+        warnings.warn(
+            "Linear+BN folding failed during optimize symbolic_trace: "
+            f"{type(error).__name__}: {error}"
+        )
+        return module, 0
+
+    modules = dict(fx_model.named_modules())
+    new_graph = copy.deepcopy(fx_model.graph)
+
+    for pattern in patterns:
+        for node in list(new_graph.nodes):
+            if not optimization.matches_module_pattern(pattern, node, modules):
+                continue
+            linear_node = node.args[0]
+            if not isinstance(linear_node, fx.Node):
+                continue
+            if len(linear_node.users) > 1:
+                continue
+
+            linear = modules[linear_node.target]
+            bn = modules[node.target]
+            if not bn.track_running_stats:
+                continue
+
+            fused_linear = fuse_linear_bn_eval(linear, bn)
+            optimization.replace_node_module(linear_node, modules, fused_linear)
+            node.replace_all_uses_with(linear_node)
+            new_graph.erase_node(node)
+
+    try:
+        fused = fx.GraphModule(fx_model, new_graph)
+    except BaseException as error:
+        warnings.warn(
+            "Linear+BN folding failed during FX graph rebuild: "
+            f"{type(error).__name__}: {error}"
         )
         return module, 0
 
