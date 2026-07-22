@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=77.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "onednn-extension-demo"
+version = "0.1.0"
+description = "Lightweight oneDNN inference optimization frontend, inspired by IPEX"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [
+    {name = "oneDNN Extension Demo Contributors"},
+]
+keywords = ["onednn", "mkldnn", "inference", "optimization", "pytorch"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "torch>=2.0",
+    "typing-extensions>=4.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "numpy",
+    "opencv-python-headless",
+    "ultralytics",
+]
+
+[project.urls]
+Homepage = "https://github.com/example/onednn-extension-demo"
+Repository = "https://github.com/example/onednn-extension-demo"
+
+[tool.setuptools.packages.find]
+include = ["oneDNN_extension_demo*"]
+
+[tool.setuptools.package-data]
+oneDNN_extension_demo = ["csrc/*.cpp"]

@@ -8,6 +8,22 @@ build/
 dist/
 *.egg-info/
 .eggs/
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Benchmark outputs
+ablation_results.json
+
+# IDE / editor
+.vscode/
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
 *.whl
 
 # Native extension artifacts

@@ -4,8 +4,6 @@ from dataclasses import dataclass
 from typing import Dict, Type
 
 import torch
-import torch.fx as fx
-import torch.fx.experimental.optimization as optimization
 from torch import nn
 from torch.nn.modules.batchnorm import _BatchNorm
 from torch.nn.utils.fusion import fuse_linear_bn_eval
@@ -215,74 +213,76 @@ def _count_batchnorm_modules(module: nn.Module) -> int:
 
 
 def _fold_conv_bn(module: nn.Module):
-    """Fold Conv+BatchNorm in eval mode, similar to ipex.optimize frontend path."""
+    """Fold Conv2d+BatchNorm2d in eval mode by walking the module tree.
+
+    Unlike ``optimization.fuse()``, this does NOT use FX symbolic_trace and
+    therefore works on models with dynamic control flow (e.g. YOLO).
+    """
 
     before = _count_batchnorm_modules(module)
-    try:
-        fused = optimization.fuse(module, inplace=True)
-    except BaseException as error:
-        warnings.warn(
-            f"Conv+BN folding failed during optimize: {type(error).__name__}: {error}"
-        )
-        return module, 0
-
-    after = _count_batchnorm_modules(fused)
-    return fused, max(before - after, 0)
+    _fuse_adjacent_pairs(
+        module,
+        leader_cls=nn.Conv2d,
+        follower_cls=nn.BatchNorm2d,
+        fuse_fn=_fuse_single_conv_bn,
+    )
+    after = _count_batchnorm_modules(module)
+    return module, max(before - after, 0)
 
 
 def _fold_linear_bn(module: nn.Module):
-    """Fold Linear+BatchNorm in eval mode with FX pattern matching."""
+    """Fold Linear+BatchNorm in eval mode by walking the module tree."""
 
     before = _count_batchnorm_modules(module)
-    patterns = [
-        (nn.Linear, nn.BatchNorm1d),
-        (nn.Linear, nn.BatchNorm2d),
-        (nn.Linear, nn.BatchNorm3d),
-    ]
-
-    try:
-        fx_model = fx.symbolic_trace(module)
-    except BaseException as error:
-        warnings.warn(
-            "Linear+BN folding failed during optimize symbolic_trace: "
-            f"{type(error).__name__}: {error}"
+    for bn_cls in (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d):
+        _fuse_adjacent_pairs(
+            module,
+            leader_cls=nn.Linear,
+            follower_cls=bn_cls,
+            fuse_fn=_fuse_single_linear_bn,
         )
-        return module, 0
+    after = _count_batchnorm_modules(module)
+    return module, max(before - after, 0)
 
-    modules = dict(fx_model.named_modules())
-    new_graph = copy.deepcopy(fx_model.graph)
 
-    for pattern in patterns:
-        for node in list(new_graph.nodes):
-            if not optimization.matches_module_pattern(pattern, node, modules):
+def _fuse_adjacent_pairs(parent, *, leader_cls, follower_cls, fuse_fn):
+    """Walk the module tree and fuse consecutive leader→follower children in-place.
+
+    This operates on the *immediate children* of every submodule, so it handles
+    nn.Sequential and custom containers equally well without any tracing.
+    """
+
+    for child in parent.children():
+        _fuse_adjacent_pairs(child, leader_cls=leader_cls, follower_cls=follower_cls, fuse_fn=fuse_fn)
+
+    # OrderedDict preserves insertion order → matches execution order
+    names = list(parent._modules.keys())
+    i = 0
+    while i < len(names) - 1:
+        cur = parent._modules[names[i]]
+        nxt = parent._modules[names[i + 1]]
+        if isinstance(cur, leader_cls) and isinstance(nxt, follower_cls):
+            if not getattr(nxt, "track_running_stats", True):
+                i += 2
                 continue
-            linear_node = node.args[0]
-            if not isinstance(linear_node, fx.Node):
+            try:
+                fused = fuse_fn(cur, nxt)
+            except Exception:
+                i += 2
                 continue
-            if len(linear_node.users) > 1:
-                continue
+            parent._modules[names[i]] = fused
+            parent._modules[names[i + 1]] = nn.Identity()
+            names.pop(i + 1)
+        else:
+            i += 1
 
-            linear = modules[linear_node.target]
-            bn = modules[node.target]
-            if not bn.track_running_stats:
-                continue
 
-            fused_linear = fuse_linear_bn_eval(linear, bn)
-            optimization.replace_node_module(linear_node, modules, fused_linear)
-            node.replace_all_uses_with(linear_node)
-            new_graph.erase_node(node)
+def _fuse_single_conv_bn(conv: nn.Conv2d, bn: nn.BatchNorm2d):
+    return torch.nn.utils.fusion.fuse_conv_bn_eval(conv, bn)
 
-    try:
-        fused = fx.GraphModule(fx_model, new_graph)
-    except BaseException as error:
-        warnings.warn(
-            "Linear+BN folding failed during FX graph rebuild: "
-            f"{type(error).__name__}: {error}"
-        )
-        return module, 0
 
-    after = _count_batchnorm_modules(fused)
-    return fused, max(before - after, 0)
+def _fuse_single_linear_bn(linear: nn.Linear, bn: _BatchNorm):
+    return fuse_linear_bn_eval(linear, bn)
 
 
 def _record_sample_input_sizes(model: nn.Module, sample_input) -> None:
