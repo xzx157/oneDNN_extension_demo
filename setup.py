@@ -59,22 +59,54 @@ def _native_build_config():
         raise RuntimeError(f"oneDNN library not found: {library_path}")
 
     cxx_flags = ["/O2"] if os.name == "nt" else ["-O3"]
+    rpath_flags = [] if os.name == "nt" else ["-Wl,-rpath,$ORIGIN"]
     extension = CppExtension(
         name="oneDNN_extension_demo._C",
-        # ✅ 修复：使用相对路径而不是绝对路径
         sources=["oneDNN_extension_demo/csrc/op_context.cpp"],
         include_dirs=[str(include_path)],
         define_macros=[("ODNN_DEMO_USE_DNNL", "1")],
         extra_compile_args={"cxx": cxx_flags},
-        extra_link_args=[str(library_path)],
+        extra_link_args=[str(library_path)] + rpath_flags,
     )
+
+    # 新增：aten 劫持扩展（dnnl::* 直接调用）
+    hijack_sources = [
+        "oneDNN_extension_demo/csrc/onednn_hijack.cpp",
+        "oneDNN_extension_demo/csrc/kernels/eltwise.cpp",
+        "oneDNN_extension_demo/csrc/kernels/pooling.cpp",
+        "oneDNN_extension_demo/csrc/kernels/softmax.cpp",
+        "oneDNN_extension_demo/csrc/kernels/binary.cpp",
+        "oneDNN_extension_demo/csrc/kernels/unary.cpp",
+        "oneDNN_extension_demo/csrc/kernels/normalization.cpp",
+        "oneDNN_extension_demo/csrc/kernels/matmul.cpp",
+    ]
+    hijack_extension = CppExtension(
+        name="oneDNN_extension_demo._C_hijack",
+        sources=hijack_sources,
+        include_dirs=[str(include_path)],
+        define_macros=[("ODNN_DEMO_USE_DNNL", "1")],
+        extra_compile_args={"cxx": cxx_flags},
+        extra_link_args=[str(library_path)] + rpath_flags,
+    )
+
     version = torch.__version__.split("+", 1)[0].split(".")
     torch_requirement = (
         f"torch>={version[0]}.{version[1]},"
         f"<{version[0]}.{int(version[1]) + 1}"
     )
     return (
-        [extension],
+        [extension, hijack_extension],
+        {"build_ext": BuildExtension.with_options(use_ninja=True)},
+        torch_requirement,
+    )
+
+    version = torch.__version__.split("+", 1)[0].split(".")
+    torch_requirement = (
+        f"torch>={version[0]}.{version[1]},"
+        f"<{version[0]}.{int(version[1]) + 1}"
+    )
+    return (
+        [extension, hijack_extension],
         {"build_ext": BuildExtension.with_options(use_ninja=True)},
         torch_requirement,
     )

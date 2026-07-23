@@ -9,6 +9,8 @@ import torch
 
 _LOADED = False
 _LOAD_SOURCE = None
+_HIJACK_LOADED = False
+_HIJACK_LOAD_SOURCE = None
 
 
 def _find_prebuilt_extension():
@@ -69,6 +71,20 @@ def _find_dnnl_config():
             library = next(
                 (str(path) for path in candidates if path.is_file()), None
             )
+
+    # 尝试从项目内置的 third_party/onednn/ 加载
+    if not include_dir or not library:
+        pkg_dir = Path(__file__).resolve().parent.parent
+        bundled_root = pkg_dir / "third_party" / "onednn"
+        bundled_include = bundled_root / "include"
+        bundled_header = bundled_include / "oneapi" / "dnnl" / "dnnl.hpp"
+        if bundled_header.is_file():
+            include_dir = include_dir or str(bundled_include)
+            lib_dir = bundled_root / "lib"
+            for candidate in sorted(lib_dir.glob("libdnnl.so*"), reverse=True):
+                if candidate.is_file():
+                    library = library or str(candidate)
+                    break
 
     if bool(include_dir) != bool(library):
         raise RuntimeError(
@@ -199,3 +215,106 @@ def load_cpp_extension():
 def cpp_extension_status():
     """Return whether the native extension is loaded and where it came from."""
     return {"loaded": _LOADED, "source": _LOAD_SOURCE}
+
+
+def _find_prebuilt_hijack_extension():
+    """Find a prebuilt _C_hijack*.so in the package directory."""
+    package_dir = Path(__file__).resolve().parent
+    for suffix in importlib.machinery.EXTENSION_SUFFIXES:
+        candidate = package_dir / f"_C_hijack{suffix}"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def load_hijack_extension():
+    """Build and load the oneDNN aten hijack C++ extension.
+
+    Prefers a prebuilt _C_hijack*.so in the package (wheel mode).
+    Falls back to JIT compilation via torch.utils.cpp_extension.load.
+    """
+    global _HIJACK_LOADED, _HIJACK_LOAD_SOURCE
+    if _HIJACK_LOADED:
+        return
+
+    # 1) 尝试加载预编译的 wheel 内 .so
+    prebuilt = _find_prebuilt_hijack_extension()
+    if prebuilt is not None:
+        # 先加载捆绑的 libdnnl.so，否则 _C_hijack.so 找不到依赖
+        include_paths, extra_ldflags, use_native = _find_dnnl_config()
+        if use_native:
+            for flag in extra_ldflags:
+                if not flag.startswith("-Wl,"):
+                    import ctypes
+                    ctypes.CDLL(flag, mode=ctypes.RTLD_GLOBAL)
+        try:
+            torch.ops.load_library(str(prebuilt))
+        except Exception as error:
+            raise RuntimeError(
+                "The bundled hijack extension could not be loaded. "
+                f"Original error: {type(error).__name__}: {error}"
+            ) from error
+        _HIJACK_LOADED = True
+        _HIJACK_LOAD_SOURCE = "prebuilt-wheel"
+        return
+
+    # 2) 回退：JIT 编译
+    _check_build_tools()
+    _check_windows_architecture()
+    from torch.utils.cpp_extension import load
+
+    pkg_dir = Path(__file__).resolve().parent
+    csrc_dir = pkg_dir / "csrc"
+    kernels_dir = csrc_dir / "kernels"
+
+    sources = [
+        str(csrc_dir / "onednn_hijack.cpp"),
+        str(kernels_dir / "eltwise.cpp"),
+        str(kernels_dir / "pooling.cpp"),
+        str(kernels_dir / "softmax.cpp"),
+        str(kernels_dir / "binary.cpp"),
+        str(kernels_dir / "unary.cpp"),
+        str(kernels_dir / "normalization.cpp"),
+        str(kernels_dir / "matmul.cpp"),
+    ]
+
+    extra_cflags = ["/O2"] if os.name == "nt" else ["-O3", "-std=c++17"]
+    include_paths, extra_ldflags, use_native_dnnl = _find_dnnl_config()
+    if use_native_dnnl:
+        extra_cflags.append(
+            "/DODNN_DEMO_USE_DNNL=1"
+            if os.name == "nt"
+            else "-DODNN_DEMO_USE_DNNL=1"
+        )
+    else:
+        raise RuntimeError(
+            "oneDNN hijack extension requires oneDNN headers and library. "
+            "Set DNNL_ROOT or ensure third_party/onednn/ is present."
+        )
+
+    architecture = platform.machine().lower() or "unknown"
+    extension_name = f"odnn_hijack_{architecture}_dnnl_v1"
+    try:
+        load(
+            name=extension_name,
+            sources=sources,
+            extra_cflags=extra_cflags,
+            extra_include_paths=include_paths,
+            extra_ldflags=extra_ldflags,
+            is_python_module=False,
+            verbose=os.environ.get("ODNN_DEMO_CPP_VERBOSE") == "1",
+        )
+    except Exception as error:
+        raise RuntimeError(
+            "Failed to build the oneDNN aten hijack extension. "
+            "Set ODNN_DEMO_CPP_VERBOSE=1 for the full compiler command. "
+            f"Original error: {type(error).__name__}: {error}"
+        ) from error
+
+    _HIJACK_LOADED = True
+    _HIJACK_LOAD_SOURCE = "jit"
+
+
+def hijack_extension_status():
+    """Return whether the hijack extension is loaded."""
+    return {"loaded": _HIJACK_LOADED, "source": _HIJACK_LOAD_SOURCE}

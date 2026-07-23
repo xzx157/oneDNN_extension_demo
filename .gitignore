@@ -53,3 +53,5 @@ htmlcov/
 .DS_Store
 oneDNN_extension.code-workspace
 ablation_benchmark.py
+libdnnl.so*
+oneDNN_extension_demo/libdnnl.so*
