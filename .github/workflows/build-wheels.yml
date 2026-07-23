@@ -31,8 +31,12 @@ jobs:
         include:
           - arch: x86_64
             runner: ubuntu-latest
+            torch_suffix: +cpu
+            torch_index: https://download.pytorch.org/whl/cpu
           - arch: aarch64
             runner: ubuntu-24.04-arm
+            torch_suffix: ""
+            torch_index: https://pypi.org/simple
     runs-on: ${{ matrix.runner }}
     env:
       CIBW_ENVIRONMENT: >-
@@ -41,18 +45,26 @@ jobs:
         DNNL_VERSION=${{ inputs.dnnl_version || 'v3.8.1' }}
         ODNN_PACKAGE_VERSION=${{ github.event.release.tag_name || inputs.package_version || '0.1.0' }}
         LD_LIBRARY_PATH=/opt/onednn/lib:/opt/onednn/lib64
+        ODNN_TORCH_VERSION=${{ inputs.torch_version || '2.8.0' }}
+        ODNN_TORCH_SUFFIX=${{ matrix.torch_suffix }}
+        ODNN_TORCH_INDEX=${{ matrix.torch_index }}
       CIBW_ARCHS_LINUX: ${{ matrix.arch }}
+      CIBW_BUILD_VERBOSITY: "3"
       CIBW_BEFORE_ALL_LINUX: >-
         bash {project}/tools/build_onednn.sh
       CIBW_BEFORE_BUILD_LINUX: >-
+        python -m pip install ninja &&
         python -m pip install
-        torch==${{ inputs.torch_version || '2.8.0' }}
-        ninja
-      CIBW_TEST_REQUIRES: torch==${{ inputs.torch_version || '2.8.0' }}
+        --index-url "${ODNN_TORCH_INDEX}"
+        "torch==${ODNN_TORCH_VERSION}${ODNN_TORCH_SUFFIX}"
+      CIBW_BEFORE_TEST_LINUX: >-
+        python -m pip install
+        --index-url "${ODNN_TORCH_INDEX}"
+        "torch==${ODNN_TORCH_VERSION}${ODNN_TORCH_SUFFIX}"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -60,7 +72,15 @@ jobs:
         run: python -m pip install "cibuildwheel==2.23.3"
 
       - name: Build and repair wheels
-        run: python -m cibuildwheel --output-dir wheelhouse
+        run: python -m cibuildwheel --output-dir wheelhouse 2>&1 | tee cibuildwheel.log
+
+      - name: Upload detailed build log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-linux-${{ matrix.arch }}-torch-${{ inputs.torch_version || '2.8.0' }}
+          path: cibuildwheel.log
+          if-no-files-found: error
 
       - name: Verify bundled native libraries
         run: python tools/verify_wheel_contents.py wheelhouse/*.whl

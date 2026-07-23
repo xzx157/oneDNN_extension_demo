@@ -12,9 +12,23 @@ the oneDNN shared library. End users do not need a compiler, oneDNN headers,
 python -m pip install onednn-extension-demo
 ```
 
+For a fresh Linux x86_64 CPU-only environment, install PyTorch from its CPU
+index first; otherwise PyPI's default Linux PyTorch package may pull NVIDIA
+runtime dependencies:
+
+```bash
+python -m pip install --index-url https://download.pytorch.org/whl/cpu \
+  torch==2.8.0+cpu
+python -m pip install onednn-extension-demo
+```
+
 Native wheels are compiled for one PyTorch minor ABI. Install normally and let
 `pip` enforce the wheel's dependency range; do not use `--no-deps` to combine a
 wheel with a different PyTorch minor version.
+
+The Linux x86_64 CI builds against PyTorch's official `2.8.0+cpu` wheel, so it
+does not download or bundle CUDA/NVIDIA runtime packages. Linux aarch64 uses
+the native CPU-only PyTorch 2.8.0 wheel from PyPI.
 
 The runtime loader prefers the bundled `oneDNN_extension_demo._C` library. A
 source checkout without `_C` keeps the developer-oriented JIT build fallback,
