@@ -7,7 +7,7 @@ name = "onednn-extension-demo"
 description = "Lightweight oneDNN inference optimization frontend, inspired by IPEX"
 readme = "README.md"
 license = "MIT"
-license-files = ["LICENSE", "LICENSES/*", "THIRD_PARTY_NOTICES.md"]
+license-files = ["LICENSE", "LICENSES/*"]
 requires-python = ">=3.9"
 authors = [
     {name = "oneDNN Extension Demo Contributors"},
