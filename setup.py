@@ -5,17 +5,7 @@ from setuptools import setup
 
 
 ROOT = Path(__file__).resolve().parent
-
-# 自动检测 bundled oneDNN
-_BUNDLED_DNNL = ROOT / "third_party" / "onednn"
-if _BUNDLED_DNNL.is_dir():
-    os.environ.setdefault("DNNL_ROOT", str(_BUNDLED_DNNL))
-
-# 有 oneDNN 就自动启用 native build
-BUILD_NATIVE = (
-    os.environ.get("ODNN_BUILD_NATIVE") == "1"
-    or os.environ.get("DNNL_ROOT", "") != ""
-)
+BUILD_NATIVE = os.environ.get("ODNN_BUILD_NATIVE") == "1"
 PACKAGE_VERSION = os.environ.get("ODNN_PACKAGE_VERSION", "0.1.0").lstrip("v")
 
 

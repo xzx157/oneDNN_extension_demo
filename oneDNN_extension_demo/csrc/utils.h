@@ -24,6 +24,19 @@ inline dnnl::memory::dims to_dims(at::IntArrayRef sizes) {
     return dnnl::memory::dims(sizes.begin(), sizes.end());
 }
 
+inline bool is_dnnl_supported_dtype(const at::Tensor& t) {
+    switch (t.scalar_type()) {
+        case at::kFloat:
+        case at::kBFloat16:
+        case at::kHalf:
+        case at::kInt:
+        case at::kByte:
+            return true;
+        default:
+            return false;
+    }
+}
+
 /// 将 at::Tensor 包装为 dnnl::memory（不拷贝数据）
 inline dnnl::memory tensor_to_memory(
         const at::Tensor& t,
@@ -48,7 +61,8 @@ inline dnnl::memory tensor_to_memory(
 /// 检查 tensor 是否可用 oneDNN 处理
 inline bool is_dnnl_friendly(const at::Tensor& t) {
     return t.defined() && t.device().is_cpu() &&
-           t.layout() == c10::kStrided && t.numel() > 0;
+           t.layout() == c10::kStrided && t.numel() > 0 &&
+           is_dnnl_supported_dtype(t);
 }
 
 /// 检查是否所有 tensor 都适合 oneDNN
