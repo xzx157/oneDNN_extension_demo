@@ -195,8 +195,8 @@ tag, compiles `_C` against the selected PyTorch version, and runs
 library directory and uses a relative runtime search path.
 
 Run the workflow manually to validate artifacts before publishing. Choose the
-PyTorch version that the release supports, such as `2.7.1`; the generated wheel
-metadata constrains installation to `torch>=2.7,<2.8`.
+PyTorch version that the release supports, such as `2.8.0`; the generated wheel
+metadata constrains installation to `torch>=2.8,<2.9`.
 
 For a local Linux build, install the target PyTorch version and build without
 PEP 517 isolation so the extension uses that exact ABI:
