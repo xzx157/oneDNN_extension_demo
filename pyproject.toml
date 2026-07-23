@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "onednn-extension-demo"
-version = "0.1.0"
 description = "Lightweight oneDNN inference optimization frontend, inspired by IPEX"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE", "LICENSES/*", "THIRD_PARTY_NOTICES.md"]
 requires-python = ">=3.9"
 authors = [
     {name = "oneDNN Extension Demo Contributors"},
@@ -26,11 +26,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-
-dependencies = [
-    "torch>=2.0",
-    "typing-extensions>=4.0",
-]
+dynamic = ["version", "dependencies"]
 
 [project.optional-dependencies]
 dev = [
@@ -40,11 +36,21 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/example/onednn-extension-demo"
-Repository = "https://github.com/example/onednn-extension-demo"
+Homepage = "https://github.com/xzx157/oneDNN_extension_demo"
+Repository = "https://github.com/xzx157/oneDNN_extension_demo"
 
 [tool.setuptools.packages.find]
 include = ["oneDNN_extension_demo*"]
 
 [tool.setuptools.package-data]
 oneDNN_extension_demo = ["csrc/*.cpp"]
+
+[tool.cibuildwheel]
+build = "cp39-manylinux_* cp310-manylinux_* cp311-manylinux_* cp312-manylinux_*"
+build-frontend = "pip; args: --no-build-isolation"
+manylinux-x86_64-image = "manylinux_2_28"
+manylinux-aarch64-image = "manylinux_2_28"
+test-command = "env -u LD_LIBRARY_PATH python {project}/tools/smoke_test_wheel.py"
+
+[tool.cibuildwheel.linux]
+repair-wheel-command = "auditwheel repair --exclude libtorch.so --exclude libtorch_cpu.so --exclude libtorch_python.so --exclude libtorch_global_deps.so --exclude libc10.so -w {dest_dir} {wheel}"

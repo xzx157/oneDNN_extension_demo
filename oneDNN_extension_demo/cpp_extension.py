@@ -1,4 +1,5 @@
 import os
+import importlib.machinery
 import platform
 import shutil
 from pathlib import Path
@@ -7,6 +8,44 @@ import torch
 
 
 _LOADED = False
+_LOAD_SOURCE = None
+
+
+def _find_prebuilt_extension():
+    package_dir = Path(__file__).resolve().parent
+    for suffix in importlib.machinery.EXTENSION_SUFFIXES:
+        candidate = package_dir / f"_C{suffix}"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _load_prebuilt_extension():
+    candidate = _find_prebuilt_extension()
+    if candidate is None:
+        return False
+    try:
+        torch.ops.load_library(str(candidate))
+    except Exception as error:
+        raise RuntimeError(
+            "The bundled native extension could not be loaded. Its wheel may "
+            "not match the installed PyTorch or platform. Reinstall without "
+            "--no-deps and use a wheel built for this PyTorch minor version. "
+            f"Original error: {type(error).__name__}: {error}"
+        ) from error
+    return True
+
+
+def _validate_registration():
+    try:
+        namespace = torch.classes.odnn_prepack
+        namespace.ConvolutionOpContext
+        namespace.LinearOpContext
+    except (AttributeError, RuntimeError) as error:
+        raise RuntimeError(
+            "The native extension loaded but did not register the expected "
+            "odnn_prepack classes."
+        ) from error
 
 
 def _find_dnnl_config():
@@ -109,8 +148,14 @@ def _check_windows_architecture():
 
 
 def load_cpp_extension():
-    global _LOADED
+    global _LOADED, _LOAD_SOURCE
     if _LOADED:
+        return
+
+    if _load_prebuilt_extension():
+        _validate_registration()
+        _LOADED = True
+        _LOAD_SOURCE = "prebuilt-wheel"
         return
 
     _check_build_tools()
@@ -146,6 +191,11 @@ def load_cpp_extension():
             f"Original error: {type(error).__name__}: {error}"
         ) from error
 
-    if not hasattr(torch.classes, "odnn_prepack"):
-        raise RuntimeError("C++ OpContext classes were not registered.")
+    _validate_registration()
     _LOADED = True
+    _LOAD_SOURCE = "jit"
+
+
+def cpp_extension_status():
+    """Return whether the native extension is loaded and where it came from."""
+    return {"loaded": _LOADED, "source": _LOAD_SOURCE}

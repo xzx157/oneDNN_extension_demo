@@ -2,6 +2,24 @@
 
 This directory demonstrates an IPEX-like frontend at a small scale.
 
+## Installation
+
+Release wheels contain the compiled PyTorch extension and a private copy of
+the oneDNN shared library. End users do not need a compiler, oneDNN headers,
+`libdnnl.so`, or any `DNNL_*` environment variables:
+
+```bash
+python -m pip install onednn-extension-demo
+```
+
+Native wheels are compiled for one PyTorch minor ABI. Install normally and let
+`pip` enforce the wheel's dependency range; do not use `--no-deps` to combine a
+wheel with a different PyTorch minor version.
+
+The runtime loader prefers the bundled `oneDNN_extension_demo._C` library. A
+source checkout without `_C` keeps the developer-oriented JIT build fallback,
+which still requires a compiler and optionally `DNNL_ROOT` for native oneDNN.
+
 The public API is:
 
 ```python
@@ -168,3 +186,34 @@ OpContext path JIT-compiles `csrc/op_context.cpp` into a Linux `.so` on first
 use. This demo mirrors the frontend structure needed for a later backend:
 build a lookup table, replace supported modules, then execute backend-specific
 kernels.
+
+## Building Release Wheels
+
+The `Build native wheels` GitHub Actions workflow builds oneDNN from a pinned
+tag, compiles `_C` against the selected PyTorch version, and runs
+`auditwheel repair`. The repaired wheel contains `libdnnl.so` under its private
+library directory and uses a relative runtime search path.
+
+Run the workflow manually to validate artifacts before publishing. Choose the
+PyTorch version that the release supports, such as `2.7.1`; the generated wheel
+metadata constrains installation to `torch>=2.7,<2.8`.
+
+For a local Linux build, install the target PyTorch version and build without
+PEP 517 isolation so the extension uses that exact ABI:
+
+```bash
+export ODNN_BUILD_NATIVE=1
+export DNNL_ROOT=/opt/onednn
+python -m pip wheel . --no-build-isolation -w wheelhouse
+auditwheel repair wheelhouse/*.whl -w repaired-wheelhouse
+```
+
+Publishing a GitHub Release runs the same build and uploads the repaired wheels
+to PyPI through Trusted Publishing. Before the first release, configure a PyPI
+Trusted Publisher for this repository and the workflow
+`.github/workflows/build-wheels.yml`. No long-lived PyPI token is required.
+
+The initial build matrix publishes CPython 3.9-3.12 wheels for Linux x86_64
+and Linux aarch64, including Kunpeng-class hosts. Other operating systems need
+separate native wheel jobs; an x86_64 `libdnnl.so` must never be reused on an
+aarch64 platform, or vice versa.
