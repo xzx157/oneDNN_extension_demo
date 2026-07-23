@@ -5,11 +5,16 @@ import torch
 from torch import nn
 
 import oneDNN_extension_demo as odnn
-from oneDNN_extension_demo.cpp_extension import cpp_extension_status
+from oneDNN_extension_demo.cpp_extension import (
+    cpp_extension_status,
+    hijack_extension_status,
+)
 from oneDNN_extension_demo.prepack_context import ODNNConvolutionOpContext
 
 
 def main():
+    assert hijack_extension_status() == {"loaded": False, "source": None}
+
     torch.manual_seed(0)
     model = nn.Sequential(
         nn.Conv2d(3, 8, kernel_size=3, padding=1),

@@ -1,11 +1,21 @@
-"""oneDNN extension demo — import 时自动注册算子并劫持 aten kernel。"""
+"""Public entry points for the oneDNN extension demo."""
 
-from . import ops              # 注册 odnn::* 自定义算子
+import os
 
-# 加载 C++ aten 劫持扩展（dnnl::* 直接调用替代 aten::*）
-from .cpp_extension import load_hijack_extension
-load_hijack_extension()
-
+from . import ops
 from .frontend import optimize
 
-__all__ = ["optimize"]
+
+def enable_aten_hijack():
+    """Opt in to the experimental global aten CPU hijack extension."""
+
+    from .cpp_extension import load_hijack_extension
+
+    load_hijack_extension()
+
+
+if os.environ.get("ODNN_ENABLE_ATEN_HIJACK") == "1":
+    enable_aten_hijack()
+
+
+__all__ = ["enable_aten_hijack", "optimize", "ops"]
