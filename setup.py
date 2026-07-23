@@ -58,7 +58,7 @@ def _native_build_config():
     if not library_path.is_file():
         raise RuntimeError(f"oneDNN library not found: {library_path}")
 
-    cxx_flags = ["/O2"] if os.name == "nt" else ["-O3"]
+    cxx_flags = ["/O2"] if os.name == "nt" else ["-O3", "-std=c++17"]
     rpath_flags = [] if os.name == "nt" else ["-Wl,-rpath,$ORIGIN"]
     extension = CppExtension(
         name="oneDNN_extension_demo._C",
