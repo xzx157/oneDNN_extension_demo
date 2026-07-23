@@ -82,15 +82,15 @@ jobs:
           path: cibuildwheel.log
           if-no-files-found: error
 
-      - name: Verify bundled native libraries
-        run: python tools/verify_wheel_contents.py wheelhouse/*.whl
-
       - name: Upload wheel artifacts
         uses: actions/upload-artifact@v4
         with:
           name: wheels-linux-${{ matrix.arch }}-torch-${{ inputs.torch_version || '2.8.0' }}
           path: wheelhouse/*.whl
           if-no-files-found: error
+
+      - name: Verify bundled native libraries
+        run: python tools/verify_wheel_contents.py wheelhouse/*.whl
 
   publish:
     name: Publish wheels to PyPI

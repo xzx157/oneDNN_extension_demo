@@ -17,17 +17,26 @@ def main():
             if name.startswith("oneDNN_extension_demo/_C")
             and name.endswith(".so")
         ]
-        dnnl_libraries = [name for name in names if "libdnnl.so" in name]
+        shared_libraries = [
+            name for name in names if ".so" in Path(name).name
+        ]
+        dnnl_libraries = [
+            name
+            for name in shared_libraries
+            if Path(name).name.startswith("libdnnl")
+        ]
         bundled_torch_libraries = [
             name
-            for name in names
+            for name in shared_libraries
             if Path(name).name.startswith(("libtorch", "libc10"))
-            and name.endswith(".so")
         ]
         if not native_extensions:
             raise RuntimeError(f"{wheel.name} does not contain the native _C library")
         if not dnnl_libraries:
-            raise RuntimeError(f"{wheel.name} does not contain libdnnl.so")
+            raise RuntimeError(
+                f"{wheel.name} does not contain a bundled oneDNN library; "
+                f"shared libraries: {shared_libraries}"
+            )
         if bundled_torch_libraries:
             raise RuntimeError(
                 f"{wheel.name} unexpectedly bundles PyTorch libraries: "
