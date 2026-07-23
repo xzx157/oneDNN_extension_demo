@@ -101,6 +101,56 @@ export ODNN_DEMO_REQUIRE_NATIVE_DNNL=1
 python example.py
 ```
 
+### Download prebuilt oneDNN (no compilation required)
+
+The `third_party/onednn/` directory already contains a prebuilt oneDNN v3.8
+(OMP runtime, CPU-only, no SYCL/GPU dependency). To refresh or obtain it
+independently:
+
+```bash
+# 1. Download from conda-forge (OMP variant, no DPC++):
+#    For faster downloads in China, use the Tsinghua mirror.
+curl -L --retry 3 -o /tmp/onednn-3.8.1-omp.conda \
+  "https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge/linux-64/onednn-3.8.1-omp_hff5f129_1.conda"
+#    Or the official source:
+# curl -L --retry 3 -o /tmp/onednn-3.8.1-omp.conda \
+#   "https://api.anaconda.org/download/conda-forge/onednn/3.8.1/linux-64/onednn-3.8.1-omp_hff5f129_1.conda"
+
+# 2. Extract (requires zstandard):
+pip install zstandard
+python3 - << 'PYEOF'
+import zipfile, zstandard, io, tarfile, os, shutil
+
+extract_dir = "/tmp/onednn-extract"
+if os.path.exists(extract_dir):
+    shutil.rmtree(extract_dir)
+os.makedirs(extract_dir)
+
+with zipfile.ZipFile("/tmp/onednn-3.8.1-omp.conda") as z:
+    data = z.read([n for n in z.namelist() if n.startswith("pkg-") and n.endswith(".tar.zst")][0])
+
+decompressed = zstandard.ZstdDecompressor().decompress(data)
+with tarfile.open(fileobj=io.BytesIO(decompressed)) as tar:
+    tar.extractall(extract_dir)
+
+print("Extracted to", extract_dir)
+PYEOF
+
+# 3. Copy to third_party/:
+rm -rf third_party/onednn
+mkdir -p third_party/onednn/lib third_party/onednn/include
+cp -a /tmp/onednn-extract/lib/libdnnl.so* third_party/onednn/lib/
+cp -a /tmp/onednn-extract/include/* third_party/onednn/include/
+
+# 4. Verify:
+ls third_party/onednn/lib/libdnnl.so.3.8 && echo "oneDNN OK"
+```
+
+The OMP runtime variant depends only on system libraries (`libgomp`, `libstdc++`,
+etc.) and does **not** require SYCL, OpenCL, TBB, or a GPU driver. Choose the
+`omp_*` build tag in the conda-forge filename; avoid `dpcpp_*` variants unless
+you have a working oneAPI DPC++/SYCL runtime.
+
 With a representative `sample_input`, supported FP32 Conv2d contexts create a
 shape-specific primitive and reorder weights once. A different input shape or
 unsupported configuration safely uses the strided ATen fallback. Linear uses

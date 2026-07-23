@@ -1,3 +1,4 @@
+import torch
 from torch import nn
 
 from . import backend
@@ -36,7 +37,7 @@ class _ODNNConv2d(nn.Module):
         else:
             padding = self.padding
 
-        return backend.conv2d(
+        return torch.ops.odnn.conv2d(
             input,
             self.weight,
             self.bias,
@@ -56,7 +57,7 @@ class _ODNNLinear(nn.Module):
         self.out_features = module.out_features
 
     def forward(self, input):
-        return backend.linear(input, self.weight, self.bias)
+        return torch.ops.odnn.linear(input, self.weight, self.bias)
 
 
 class _ODNNReLU(nn.Module):
@@ -65,7 +66,7 @@ class _ODNNReLU(nn.Module):
         self.inplace = module.inplace
 
     def forward(self, input):
-        return backend.relu(input, self.inplace)
+        return torch.ops.odnn.relu(input, self.inplace)
 
 
 class _ODNNBatchNorm2d(nn.Module):
@@ -80,7 +81,7 @@ class _ODNNBatchNorm2d(nn.Module):
         self.eps = module.eps
 
     def forward(self, input):
-        return backend.batch_norm2d(
+        return torch.ops.odnn.batchnorm2d(
             input,
             self.running_mean,
             self.running_var,
