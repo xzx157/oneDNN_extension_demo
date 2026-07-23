@@ -280,9 +280,11 @@ URL (`.../actions/runs/<run-id>`). Then open **Actions**, select
 - `smoke_test_x86_64`: optionally install `torch==2.8.0+cpu` and run the
   CPython 3.12 x86_64 smoke test. This takes longer but does not install CUDA.
 
-Download the `python-only-wheels-<version>` artifact after the job completes.
-The workflow repacks every wheel found in both x86_64 and aarch64 artifacts.
-It does not publish them to PyPI automatically.
+Download `python-only-wheels-x86_64-<version>` or
+`python-only-wheels-aarch64-<version>` after the job completes. Each artifact
+contains the CPython-version wheels for that architecture. The workflow repacks
+every wheel found in both native build artifacts and does not publish them to
+PyPI automatically.
 
 This workflow intentionally rejects changes to C++ sources, package data,
 licenses, `setup.py`, `pyproject.toml`, `MANIFEST.in`, or

@@ -87,11 +87,21 @@ jobs:
           --require-arch x86_64
           --require-arch aarch64
 
-      - name: Upload repacked wheel artifacts
+      - name: List repacked wheels
+        run: find wheelhouse -maxdepth 1 -type f -name '*.whl' -print | sort
+
+      - name: Upload x86_64 wheel artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: python-only-wheels-${{ inputs.package_version }}
-          path: wheelhouse/*.whl
+          name: python-only-wheels-x86_64-${{ inputs.package_version }}
+          path: wheelhouse/*x86_64.whl
+          if-no-files-found: error
+
+      - name: Upload aarch64 wheel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-only-wheels-aarch64-${{ inputs.package_version }}
+          path: wheelhouse/*aarch64.whl
           if-no-files-found: error
 
       - name: Verify bundled native libraries
