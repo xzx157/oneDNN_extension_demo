@@ -7,7 +7,6 @@ import warnings
 import torch
 from torch.jit._trace import TracerWarning
 
-
 class _RunMethod:
     """Graph execution methods used by :class:`GraphCaptureLite`."""
 

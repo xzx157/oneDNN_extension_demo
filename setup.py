@@ -61,7 +61,7 @@ def _native_build_config():
     cxx_flags = ["/O2"] if os.name == "nt" else ["-O3"]
     extension = CppExtension(
         name="oneDNN_extension_demo._C",
-        sources=[str(ROOT / "oneDNN_extension_demo" / "csrc" / "op_context.cpp")],
+        sources=[str(Path("oneDNN_extension_demo") / "csrc" / "op_context.cpp")],
         include_dirs=[str(include_path)],
         define_macros=[("ODNN_DEMO_USE_DNNL", "1")],
         extra_compile_args={"cxx": cxx_flags},
