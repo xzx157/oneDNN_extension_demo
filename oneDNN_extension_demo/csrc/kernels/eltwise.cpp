@@ -1,5 +1,7 @@
 #include "../utils.h"
 
+#include <cstdlib>
+
 namespace odnn_hijack {
 
 at::Tensor eltwise_forward(
@@ -85,9 +87,11 @@ at::Tensor hardswish_onednn(const at::Tensor& input) {
 }
 
 at::Tensor relu_onednn(const at::Tensor& input) {
-    auto output = eltwise_forward(input, dnnl::algorithm::eltwise_relu);
-    if (output.defined()) {
-        return output;
+    if (std::getenv("ODNN_ENABLE_DNNL_ELTWISE") != nullptr) {
+        auto output = eltwise_forward(input, dnnl::algorithm::eltwise_relu);
+        if (output.defined()) {
+            return output;
+        }
     }
     return at::clamp_min(input, at::Scalar(0));
 }

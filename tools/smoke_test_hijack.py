@@ -1,6 +1,7 @@
 import os
 
 os.environ.setdefault("ODNN_ENABLE_ATEN_HIJACK", "1")
+os.environ.pop("ODNN_ENABLE_DNNL_ELTWISE", None)
 
 import torch
 
