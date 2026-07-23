@@ -7,27 +7,34 @@ at::Tensor eltwise_forward(
         dnnl::algorithm algo,
         float alpha = 0.f,
         float beta = 0.f) {
-    if (!is_dnnl_friendly(input)) {
+    if (!is_dnnl_friendly(input) || input.scalar_type() != at::kFloat) {
         return {};
     }
 
-    auto dims = to_dims(input.sizes());
-    auto src_mem = tensor_to_memory(input, dims);
-    auto dst = at::empty_like(input);
+    auto src = input.contiguous();
+    auto dims = to_dims(src.sizes());
+    auto src_mem = tensor_to_memory(src, dims);
+    auto dst = at::empty_like(src);
     auto dst_mem = tensor_to_memory(dst, dims);
 
-    auto pd = dnnl::eltwise_forward::primitive_desc(
-        cpu_engine(),
-        dnnl::prop_kind::forward_inference,
-        algo,
-        src_mem.get_desc(),
-        dst_mem.get_desc(),
-        alpha,
-        beta);
+    try {
+        auto pd = dnnl::eltwise_forward::primitive_desc(
+            cpu_engine(),
+            dnnl::prop_kind::forward_inference,
+            algo,
+            src_mem.get_desc(),
+            dst_mem.get_desc(),
+            alpha,
+            beta);
 
-    dnnl::eltwise_forward(pd).execute(
-        dnnl::stream(cpu_engine()),
-        {{DNNL_ARG_SRC, src_mem}, {DNNL_ARG_DST, dst_mem}});
+        auto stream = dnnl::stream(cpu_engine());
+        dnnl::eltwise_forward(pd).execute(
+            stream,
+            {{DNNL_ARG_SRC, src_mem}, {DNNL_ARG_DST, dst_mem}});
+        stream.wait();
+    } catch (const dnnl::error&) {
+        return {};
+    }
 
     return dst;
 }
@@ -78,7 +85,11 @@ at::Tensor hardswish_onednn(const at::Tensor& input) {
 }
 
 at::Tensor relu_onednn(const at::Tensor& input) {
-    return eltwise_forward(input, dnnl::algorithm::eltwise_relu);
+    auto output = eltwise_forward(input, dnnl::algorithm::eltwise_relu);
+    if (output.defined()) {
+        return output;
+    }
+    return at::clamp_min(input, at::Scalar(0));
 }
 
 at::Tensor abs_onednn(const at::Tensor& input) {
