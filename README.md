@@ -30,6 +30,43 @@ The Linux x86_64 CI builds against PyTorch's official `2.8.0+cpu` wheel, so it
 does not download or bundle CUDA/NVIDIA runtime packages. Linux aarch64 uses
 the native CPU-only PyTorch 2.8.0 wheel from PyPI.
 
+To install a wheel downloaded from the GitHub Actions artifact, choose the file
+whose CPython and architecture tags match the target interpreter. For example,
+use a `cp312-...-x86_64.whl` with CPython 3.12 on x86_64, or a
+`cp312-...-aarch64.whl` with CPython 3.12 on aarch64.
+
+On Linux x86_64:
+
+```bash
+python -m pip install --index-url https://download.pytorch.org/whl/cpu \
+  torch==2.8.0+cpu
+python -m pip install ./onednn_extension_demo-0.1.1-cp312-cp312-manylinux_2_28_x86_64.whl
+```
+
+On Linux aarch64, including Kunpeng-class hosts:
+
+```bash
+python -m pip install torch==2.8.0
+python -m pip install ./onednn_extension_demo-0.1.1-cp312-cp312-manylinux_2_28_aarch64.whl
+```
+
+Replace `0.1.1` and `cp312` with the downloaded wheel's actual version and
+Python tag. Do not rename wheel tags. No oneDNN installation or `DNNL_*` /
+`LD_LIBRARY_PATH` configuration is required. Verify the installation with:
+
+```bash
+python - <<'PY'
+from importlib.metadata import version
+
+import torch
+import oneDNN_extension_demo as odnn
+
+print("package:", version("onednn-extension-demo"))
+print("torch:", torch.__version__)
+print("optimize available:", callable(odnn.optimize))
+PY
+```
+
 The runtime loader prefers the bundled `oneDNN_extension_demo._C` library. A
 source checkout without `_C` keeps the developer-oriented JIT build fallback,
 which still requires a compiler and optionally `DNNL_ROOT` for native oneDNN.
@@ -226,6 +263,32 @@ Publishing a GitHub Release runs the same build and uploads the repaired wheels
 to PyPI through Trusted Publishing. Before the first release, configure a PyPI
 Trusted Publisher for this repository and the workflow
 `.github/workflows/build-wheels.yml`. No long-lived PyPI token is required.
+
+### Fast Python-only wheel repacking
+
+After a successful native build, the `Repack Python-only wheels` workflow can
+reuse the repaired `_C.so` and bundled `libdnnl*.so` from that run. It replaces
+the package's Python sources, assigns a new package version, rebuilds `RECORD`,
+and uploads the repacked wheels without compiling PyTorch C++ or oneDNN again.
+
+Open the successful `Build native wheels` run and copy the numeric ID from its
+URL (`.../actions/runs/<run-id>`). Then open **Actions**, select
+**Repack Python-only wheels**, choose **Run workflow**, and enter:
+
+- `native_run_id`: the successful native build run ID.
+- `package_version`: a new PEP 440 version, such as `0.1.1`.
+- `smoke_test_x86_64`: optionally install `torch==2.8.0+cpu` and run the
+  CPython 3.12 x86_64 smoke test. This takes longer but does not install CUDA.
+
+Download the `python-only-wheels-<version>` artifact after the job completes.
+The workflow repacks every wheel found in both x86_64 and aarch64 artifacts.
+It does not publish them to PyPI automatically.
+
+This workflow intentionally rejects changes to C++ sources, package data,
+licenses, `setup.py`, `pyproject.toml`, `MANIFEST.in`, or
+`tools/build_onednn.sh`. Changes to the PyTorch version, oneDNN version,
+compiler flags, native source, Python ABI matrix, or target architecture require
+running `Build native wheels`.
 
 The initial build matrix publishes CPython 3.9-3.12 wheels for Linux x86_64
 and Linux aarch64, including Kunpeng-class hosts. Other operating systems need

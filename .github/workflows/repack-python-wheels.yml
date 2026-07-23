@@ -1,0 +1,116 @@
+name: Repack Python-only wheels
+
+on:
+  workflow_dispatch:
+    inputs:
+      native_run_id:
+        description: Successful Build native wheels run ID whose artifacts will be reused
+        required: true
+      package_version:
+        description: New package version, for example 0.1.1
+        required: true
+        default: "0.1.1"
+      smoke_test_x86_64:
+        description: Install PyTorch 2.8.0+cpu and smoke-test the CPython 3.12 x86_64 wheel
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  repack:
+    name: Reuse native wheels and replace Python code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Read native build revision
+        id: native-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NATIVE_RUN_ID: ${{ inputs.native_run_id }}
+        run: |
+          [[ "${NATIVE_RUN_ID}" =~ ^[0-9]+$ ]] || {
+            echo "native_run_id must be numeric" >&2
+            exit 1
+          }
+          run_data="$(
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${NATIVE_RUN_ID}" \
+              --jq '[.head_sha, .conclusion, .name] | @tsv'
+          )"
+          IFS=$'\t' read -r base_sha conclusion workflow_name <<< "${run_data}"
+          [[ "${conclusion}" == "success" ]] || {
+            echo "The selected native wheel run did not succeed" >&2
+            exit 1
+          }
+          [[ "${workflow_name}" == "Build native wheels" ]] || {
+            echo "The selected run is not Build native wheels" >&2
+            exit 1
+          }
+          git fetch --no-tags --depth=1 origin "${base_sha}"
+          echo "base_sha=${base_sha}" >> "${GITHUB_OUTPUT}"
+
+      - name: Install lightweight repacking dependency
+        run: python -m pip install "packaging>=24,<27"
+
+      - name: Reject native or packaging changes
+        run: >-
+          python tools/repack_python_wheels.py
+          --output-dir wheelhouse
+          --version "${{ inputs.package_version }}"
+          --base-ref "${{ steps.native-run.outputs.base_sha }}"
+          --check-only
+
+      - name: Download repaired native wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheels-linux-*
+          path: native-wheelhouse
+          merge-multiple: true
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.native_run_id }}
+
+      - name: Replace Python package files
+        run: >-
+          python tools/repack_python_wheels.py
+          native-wheelhouse/*.whl
+          --output-dir wheelhouse
+          --version "${{ inputs.package_version }}"
+          --require-arch x86_64
+          --require-arch aarch64
+
+      - name: Upload repacked wheel artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-only-wheels-${{ inputs.package_version }}
+          path: wheelhouse/*.whl
+          if-no-files-found: error
+
+      - name: Verify bundled native libraries
+        run: python tools/verify_wheel_contents.py wheelhouse/*.whl
+
+      - name: Install x86_64 test wheel
+        if: inputs.smoke_test_x86_64
+        run: |
+          python -m pip install \
+            --index-url https://download.pytorch.org/whl/cpu \
+            "torch==2.8.0+cpu"
+          wheel="$(find wheelhouse -maxdepth 1 \
+            -name '*cp312*manylinux*x86_64.whl' -print -quit)"
+          [[ -n "${wheel}" ]] || {
+            echo "No CPython 3.12 x86_64 wheel was found" >&2
+            exit 1
+          }
+          python -m pip install --no-deps "${wheel}"
+
+      - name: Smoke-test x86_64 wheel without external oneDNN
+        if: inputs.smoke_test_x86_64
+        run: env -u LD_LIBRARY_PATH python tools/smoke_test_wheel.py
