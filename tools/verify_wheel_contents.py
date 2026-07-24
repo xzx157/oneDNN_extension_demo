@@ -26,8 +26,7 @@ def main():
         ]
         if not native_extensions:
             raise RuntimeError(f"{wheel.name} does not contain the native _C library")
-        if not dnnl_libraries:
-            raise RuntimeError(f"{wheel.name} does not contain libdnnl.so")
+        # libdnnl.so.3 is excluded from auditwheel bundling (like torch libs)
         if bundled_torch_libraries:
             raise RuntimeError(
                 f"{wheel.name} unexpectedly bundles PyTorch libraries: "
