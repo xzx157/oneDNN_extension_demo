@@ -1,4 +1,5 @@
 import os
+import ctypes
 import importlib.machinery
 import platform
 import shutil
@@ -229,12 +230,18 @@ def _find_prebuilt_hijack_extension():
 
 
 def _load_prebuilt_hijack_extension():
-    """Load a pre-built hijack extension if present."""
+    """Load a pre-built hijack extension via ctypes to avoid strict NEEDED
+    library resolution at load time (libc10.so / libtorch_cpu.so may not be
+    in the dynamic linker search path during early import)."""
     candidate = _find_prebuilt_hijack_extension()
     if candidate is None:
         return False
     try:
-        torch.ops.load_library(str(candidate))
+        # Use ctypes.CDLL with RTLD_GLOBAL so TORCH_LIBRARY_IMPL registrations
+        # are visible to PyTorch. ctypes is more forgiving than
+        # torch.ops.load_library when PyTorch's own .so files are not on the
+        # default linker path (e.g. env -u LD_LIBRARY_PATH).
+        ctypes.CDLL(str(candidate), mode=ctypes.RTLD_GLOBAL)
     except Exception as error:
         raise RuntimeError(
             "The bundled hijack extension could not be loaded. "
