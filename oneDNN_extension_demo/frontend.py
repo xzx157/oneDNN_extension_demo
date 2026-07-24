@@ -13,7 +13,6 @@ from .prepack_modules import (
     _ODNNPrepackedConv2d,
     _ODNNPrepackedLinear,
 )
-from .graph_mode import GraphCaptureLite, _RunMethod
 from .prepack_context import ODNNConvolutionOpContext
 
 
@@ -44,8 +43,6 @@ class OptimizeReport:
     sample_input: bool = False
     native_dnnl_contexts: int = 0
     packed_weight_bytes: int = 0
-    graph_mode: bool = False
-    capture_method: str = ""
 
 
 def optimize(
@@ -58,8 +55,6 @@ def optimize(
     conv_bn_folding: bool = True,
     linear_bn_folding: bool = True,
     sample_input=None,
-    dtype=None,
-    graph_mode: bool = False,
     return_report: bool = False,
 ):
     """Apply layout conversion and optional oneDNN module replacement.
@@ -75,9 +70,6 @@ def optimize(
     linear_bn_folding=True folds Linear+BatchNorm(1d/2d/3d) pairs in eval mode
     using FX pattern matching before module replacement.
 
-    graph_mode=True wraps model.forward with lazy JIT graph capture
-    (JIT trace+freeze -> dynamo -> eager fallback). dtype=torch.bfloat16
-    or torch.float16 enables CPU autocast for mixed-precision inference.
     """
 
     if not torch.backends.mkldnn.is_available():
@@ -137,12 +129,6 @@ def optimize(
                 "provide sample_input."
             )
 
-    capture_method = ""
-    if graph_mode:
-        wrapper = GraphCaptureLite(opt_model, dtype=dtype)
-        opt_model.forward = wrapper(opt_model.forward)
-        capture_method = _RunMethod.label(wrapper.method)
-
     report = OptimizeReport(
         total_modules=stats["total"],
         replaced_modules=stats["replaced"],
@@ -155,8 +141,6 @@ def optimize(
         sample_input=sample_input is not None,
         native_dnnl_contexts=native_contexts,
         packed_weight_bytes=packed_weight_bytes,
-        graph_mode=graph_mode,
-        capture_method=capture_method,
         backend=(
             "native-oneDNN-prepack"
             if native_contexts

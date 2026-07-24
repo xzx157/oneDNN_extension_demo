@@ -161,20 +161,6 @@ By default, adjacent Conv2d+BatchNorm2d and Linear+BatchNorm pairs are folded
 before replacement. Disable these independently with `conv_bn_folding=False`
 or `linear_bn_folding=False`.
 
-Lazy graph capture and CPU mixed precision are also available:
-
-```python
-model = odnn.optimize(
-    model,
-    graph_mode=True,
-    dtype=torch.bfloat16,
-)
-```
-
-The first forward attempts JIT trace/freeze, then Dynamo, and finally a safe
-eager fallback. The selected method is recorded by the graph wrapper after the
-first call.
-
 The default replacement path does not call `torch.utils.mkldnn.to_mkldnn()`.
 It uses an explicit module replacement table:
 
