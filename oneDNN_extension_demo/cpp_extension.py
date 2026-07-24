@@ -73,20 +73,20 @@ def _find_dnnl_config():
                 (str(path) for path in candidates if path.is_file()), None
             )
 
-    # 尝试从项目内置的 third_party/onednn/ 加载
+    # 尝试从项目内置的路径加载：头文件在 third_party/onednn/include/，
+    # 库文件在 oneDNN_extension_demo/ 包目录下。
     if not include_dir or not library:
-        pkg_dir = Path(__file__).resolve().parent.parent
-        bundled_root = pkg_dir / "third_party" / "onednn"
-        bundled_include = bundled_root / "include"
+        pkg_dir = Path(__file__).resolve().parent
+        repo_root = pkg_dir.parent
+        bundled_include = repo_root / "third_party" / "onednn" / "include"
         bundled_header = bundled_include / "oneapi" / "dnnl" / "dnnl.hpp"
         if bundled_header.is_file():
             include_dir = include_dir or str(bundled_include)
-            # 找 libdnnl.so*
-            lib_dir = bundled_root / "lib"
-            for candidate in sorted(lib_dir.glob("libdnnl.so*"), reverse=True):
-                if candidate.is_file():
-                    library = library or str(candidate)
-                    break
+        # 在包目录下找 libdnnl.so*
+        for candidate in sorted(pkg_dir.glob("libdnnl.so*"), reverse=True):
+            if candidate.is_file():
+                library = library or str(candidate)
+                break
 
     if bool(include_dir) != bool(library):
         raise RuntimeError(
@@ -301,7 +301,7 @@ def load_hijack_extension():
     else:
         raise RuntimeError(
             "oneDNN hijack extension requires oneDNN headers and library. "
-            "Set DNNL_ROOT or ensure third_party/onednn/ is present."
+            "Set DNNL_ROOT or ensure oneDNN is installed."
         )
 
     architecture = platform.machine().lower() or "unknown"
