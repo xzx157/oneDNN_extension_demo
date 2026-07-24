@@ -1,5 +1,5 @@
 include LICENSE
 include THIRD_PARTY_NOTICES.md
 recursive-include LICENSES *
-recursive-include oneDNN_extension_demo/csrc *.cpp
+recursive-include oneDNN_extension_demo/csrc *.cpp *.h
 recursive-include tools *.py *.sh

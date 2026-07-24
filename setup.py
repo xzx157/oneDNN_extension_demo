@@ -43,6 +43,13 @@ def _native_build_config():
                 ),
                 None,
             )
+            # 兜底：oneDNN cmake install 可能只生成 libdnnl.so.3 无 libdnnl.so 软链接
+            if library is None and os.name != "nt":
+                for lib_dir in (root_path / "lib", root_path / "lib64"):
+                    so_files = sorted(lib_dir.glob("libdnnl.so.*"), reverse=True)
+                    if so_files:
+                        library = str(so_files[0])
+                        break
 
     if not include_dir or not library:
         raise RuntimeError(
