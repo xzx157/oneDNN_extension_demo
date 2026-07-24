@@ -21,18 +21,25 @@ at::Tensor binary_forward(
     auto dims_a = to_dims(a.sizes());
     auto dims_b = to_dims(b.sizes());
 
-    // oneDNN binary 不支持 0 维输入，unsqueeze 为 1 维
-    auto a_contig = a.dim() == 0 ? a.unsqueeze(0).contiguous() : a.contiguous();
-    auto b_contig = b.dim() == 0 ? b.unsqueeze(0).contiguous() : b.contiguous();
+    // oneDNN binary 要求所有输入 rank 一致，0 维需补齐到对方 rank
     bool a_was_0d = a.dim() == 0;
     bool b_was_0d = b.dim() == 0;
+    auto a_fix = a, b_fix = b;
+    if (a_was_0d && !b_was_0d) {
+        for (int i = 0; i < b.dim(); i++) a_fix = a_fix.unsqueeze(0);
+    } else if (!a_was_0d && b_was_0d) {
+        for (int i = 0; i < a.dim(); i++) b_fix = b_fix.unsqueeze(0);
+    } else if (a_was_0d && b_was_0d) {
+        a_fix = a_fix.unsqueeze(0); b_fix = b_fix.unsqueeze(0);
+    }
+    auto a_contig = a_fix.contiguous();
+    auto b_contig = b_fix.contiguous();
 
     auto src0_mem = tensor_to_memory(a_contig, to_dims(a_contig.sizes()));
     auto src1_mem = tensor_to_memory(b_contig, to_dims(b_contig.sizes()));
 
     // 输出形状：广播后的
     auto dst = at::empty_like(a_contig);
-    // 如果 b 比 a 大，输出应该和 b 一样
     if (b_contig.numel() > a_contig.numel()) {
         dst = at::empty_like(b_contig);
     }
@@ -52,13 +59,10 @@ at::Tensor binary_forward(
          {DNNL_ARG_SRC_1, src1_mem},
          {DNNL_ARG_DST, dst_mem}});
 
-    // 恢复原始形状：处理 0 维输入的 unsqueeze
-    if (a_was_0d && b_was_0d) {
-        return dst.squeeze(0);
-    } else if (a_was_0d || b_was_0d) {
-        return dst;
-    }
-    // 普通广播恢复
+    // 恢复原始形状
+    if (a_was_0d && !b_was_0d) return dst;
+    if (!a_was_0d && b_was_0d) return dst;
+    if (a_was_0d && b_was_0d) return dst.squeeze(0);
     if (dst.sizes() != a.sizes() && a.numel() > 0) {
         return dst.broadcast_to(a.sizes()).contiguous();
     }
