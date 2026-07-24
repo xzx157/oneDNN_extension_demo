@@ -21,10 +21,11 @@ at::Tensor binary_forward(
     auto dims_a = to_dims(a.sizes());
     auto dims_b = to_dims(b.sizes());
 
-    // oneDNN binary 要求两个输入维度相同或可广播
-    // 先做广播对齐
-    auto a_contig = a.contiguous();
-    auto b_contig = b.contiguous();
+    // oneDNN binary 不支持 0 维输入，unsqueeze 为 1 维
+    auto a_contig = a.dim() == 0 ? a.unsqueeze(0).contiguous() : a.contiguous();
+    auto b_contig = b.dim() == 0 ? b.unsqueeze(0).contiguous() : b.contiguous();
+    bool a_was_0d = a.dim() == 0;
+    bool b_was_0d = b.dim() == 0;
 
     auto src0_mem = tensor_to_memory(a_contig, to_dims(a_contig.sizes()));
     auto src1_mem = tensor_to_memory(b_contig, to_dims(b_contig.sizes()));
@@ -51,7 +52,13 @@ at::Tensor binary_forward(
          {DNNL_ARG_SRC_1, src1_mem},
          {DNNL_ARG_DST, dst_mem}});
 
-    // 如果广播改变了形状，恢复到期望的输出形状
+    // 恢复原始形状：处理 0 维输入的 unsqueeze
+    if (a_was_0d && b_was_0d) {
+        return dst.squeeze(0);
+    } else if (a_was_0d || b_was_0d) {
+        return dst;
+    }
+    // 普通广播恢复
     if (dst.sizes() != a.sizes() && a.numel() > 0) {
         return dst.broadcast_to(a.sizes()).contiguous();
     }

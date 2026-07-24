@@ -281,3 +281,5 @@ The initial build matrix publishes CPython 3.9-3.12 wheels for Linux x86_64
 and Linux aarch64, including Kunpeng-class hosts. Other operating systems need
 separate native wheel jobs; an x86_64 `libdnnl.so` must never be reused on an
 aarch64 platform, or vice versa.
+
+问题根因：torch.ops.load_library() 底层 dlopen 在 import 早期严格验证 NEEDED 库路径。已改用 ctypes.CDLL + RTLD_GLOBAL 来避免。

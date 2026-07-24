@@ -47,8 +47,13 @@ inline dnnl::memory tensor_to_memory(
 
 /// 检查 tensor 是否可用 oneDNN 处理
 inline bool is_dnnl_friendly(const at::Tensor& t) {
-    return t.defined() && t.device().is_cpu() &&
-           t.layout() == c10::kStrided && t.numel() > 0;
+    if (!t.defined() || !t.device().is_cpu() ||
+        t.layout() != c10::kStrided || t.numel() <= 0) {
+        return false;
+    }
+    // oneDNN eltwise/binary/softmax/matmul 仅支持以下 dtype
+    auto dt = t.scalar_type();
+    return dt == at::kFloat || dt == at::kBFloat16 || dt == at::kHalf;
 }
 
 /// 检查是否所有 tensor 都适合 oneDNN
