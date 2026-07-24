@@ -58,22 +58,50 @@ def _native_build_config():
     if not library_path.is_file():
         raise RuntimeError(f"oneDNN library not found: {library_path}")
 
+    csrc = Path("oneDNN_extension_demo") / "csrc"
+    kernels = csrc / "kernels"
     cxx_flags = ["/O2"] if os.name == "nt" else ["-O3"]
-    extension = CppExtension(
+    link_args = [str(library_path)]
+    if os.name != "nt":
+        link_args.append(f"-Wl,-rpath,{library_path.parent}")
+
+    op_context_ext = CppExtension(
         name="oneDNN_extension_demo._C",
-        sources=[str(Path("oneDNN_extension_demo") / "csrc" / "op_context.cpp")],
+        sources=[str(csrc / "op_context.cpp")],
         include_dirs=[str(include_path)],
         define_macros=[("ODNN_DEMO_USE_DNNL", "1")],
         extra_compile_args={"cxx": cxx_flags},
-        extra_link_args=[str(library_path)],
+        extra_link_args=link_args,
     )
+
+    hijack_cxx_flags = list(cxx_flags)
+    if os.name != "nt":
+        hijack_cxx_flags.append("-std=c++17")
+    hijack_ext = CppExtension(
+        name="oneDNN_extension_demo._hijack",
+        sources=[
+            str(csrc / "onednn_hijack.cpp"),
+            str(kernels / "eltwise.cpp"),
+            str(kernels / "pooling.cpp"),
+            str(kernels / "softmax.cpp"),
+            str(kernels / "binary.cpp"),
+            str(kernels / "unary.cpp"),
+            str(kernels / "normalization.cpp"),
+            str(kernels / "matmul.cpp"),
+        ],
+        include_dirs=[str(include_path)],
+        define_macros=[("ODNN_DEMO_USE_DNNL", "1")],
+        extra_compile_args={"cxx": hijack_cxx_flags},
+        extra_link_args=link_args,
+    )
+
     version = torch.__version__.split("+", 1)[0].split(".")
     torch_requirement = (
         f"torch>={version[0]}.{version[1]},"
         f"<{version[0]}.{int(version[1]) + 1}"
     )
     return (
-        [extension],
+        [op_context_ext, hijack_ext],
         {"build_ext": BuildExtension.with_options(use_ninja=True)},
         torch_requirement,
     )

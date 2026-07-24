@@ -218,16 +218,52 @@ def cpp_extension_status():
     return {"loaded": _LOADED, "source": _LOAD_SOURCE}
 
 
+def _find_prebuilt_hijack_extension():
+    """Try to find a pre-built hijack extension (_hijack*.so) in the package."""
+    package_dir = Path(__file__).resolve().parent
+    for suffix in importlib.machinery.EXTENSION_SUFFIXES:
+        candidate = package_dir / f"_hijack{suffix}"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _load_prebuilt_hijack_extension():
+    """Load a pre-built hijack extension if present."""
+    candidate = _find_prebuilt_hijack_extension()
+    if candidate is None:
+        return False
+    try:
+        torch.ops.load_library(str(candidate))
+    except Exception as error:
+        raise RuntimeError(
+            "The bundled hijack extension could not be loaded. "
+            f"Original error: {type(error).__name__}: {error}"
+        ) from error
+    return True
+
+
 def load_hijack_extension():
     """Build and load the oneDNN aten hijack C++ extension.
 
     This extension uses TORCH_LIBRARY_IMPL to intercept aten::* operators
     and redirect them to direct dnnl::* API calls.
+
+    Tries in order:
+      1. Pre-built _hijack*.so from wheel
+      2. JIT compilation from source
     """
     global _HIJACK_LOADED, _HIJACK_LOAD_SOURCE
     if _HIJACK_LOADED:
         return
 
+    # 1. Try pre-built extension from wheel
+    if _load_prebuilt_hijack_extension():
+        _HIJACK_LOADED = True
+        _HIJACK_LOAD_SOURCE = "prebuilt-wheel"
+        return
+
+    # 2. JIT compile from source
     _check_build_tools()
     _check_windows_architecture()
     from torch.utils.cpp_extension import load

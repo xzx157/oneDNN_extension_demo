@@ -42,7 +42,7 @@ Repository = "https://github.com/xzx157/oneDNN_extension_demo"
 include = ["oneDNN_extension_demo*"]
 
 [tool.setuptools.package-data]
-oneDNN_extension_demo = ["csrc/*.cpp"]
+oneDNN_extension_demo = ["csrc/*.cpp", "csrc/*.h", "csrc/kernels/*.cpp"]
 
 [tool.cibuildwheel]
 build = "cp39-manylinux_* cp310-manylinux_* cp311-manylinux_* cp312-manylinux_*"
