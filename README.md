@@ -50,16 +50,16 @@ modules:
 model = odnn.optimize(model, channels_last=True, replace_modules=False)
 ```
 
-Pass `weight_prepack=True` to use the separate prepacked path. Conv2d and Linear
-weights are converted to oneDNN/MKLDNN packed modules during `optimize()` and
-are reused during inference:
+Pass `weight_prepack=True` to use the C++ OpContext prepacked path. Conv2d and
+Linear weights are captured by C++ context objects during `optimize()` and are
+reused during inference:
 
 ```python
 model = odnn.optimize(model, channels_last=True, weight_prepack=True)
 ```
 
 Provide a representative input to record each Conv2d/Linear input shape and
-warm the corresponding oneDNN primitive cache during optimization:
+warm the corresponding backend path during optimization:
 
 ```python
 model = odnn.optimize(
@@ -70,25 +70,13 @@ model = odnn.optimize(
 )
 ```
 
-In this standalone demo, `sample_input` records shape metadata and warms the
-PyTorch oneDNN primitive cache. It does not query IPEX's private ideep APIs for
-a shape-specific weight descriptor.
+In this standalone demo, `sample_input` records shape metadata for the C++
+contexts. It does not query IPEX's private ideep APIs for a shape-specific
+weight descriptor.
 
-Set `cpp_op_context=True` to build and use the optional C++ CustomClassHolder
-contexts. This requires a compiler compatible with the installed PyTorch:
-
-```python
-model = odnn.optimize(
-    model,
-    channels_last=True,
-    weight_prepack=True,
-    sample_input=x,
-    cpp_op_context=True,
-)
-```
-
-The C++ contexts own references to the packed MKLDNN weights and execute ATen's
-strided convolution/linear kernels by default. They demonstrate the IPEX-style
+The C++ contexts own references to the packed weights and execute native oneDNN
+Conv2d when available, with a strided ATen fallback. Linear uses the strided
+ATen path in the current native extension. This demonstrates the IPEX-style
 context lifecycle without depending on IPEX's private C++ implementation.
 
 To enable persistent native oneDNN Conv2d packing, point the build at a oneDNN
@@ -160,30 +148,14 @@ The prepacked replacement table is:
 
 ```text
 nn.Conv2d -> _ODNNPrepackedConv2d
-          -> ODNNConvolutionOpContext -> MkldnnConv2d
+          -> ODNNConvolutionOpContext -> C++ ConvolutionOpContext
 nn.Linear -> _ODNNPrepackedLinear
-          -> ODNNLinearOpContext -> MkldnnLinear
+          -> ODNNLinearOpContext -> C++ LinearOpContext
 ```
 
-This path prepackages weights only. By default each wrapper converts its output
-back to dense layout, which is safe for eager models containing residual adds,
-concatenation, resizing, splitting, or other operations that do not accept
-opaque MKLDNN tensors.
-
-For a known sequential Conv2d/BatchNorm2d/ReLU graph, continuous opaque layout
-can be enabled explicitly:
-
-```python
-model = odnn.optimize(
-    model,
-    weight_prepack=True,
-    preserve_mkldnn_layout=True,
-)
-```
-
-This experimental mode inserts a dense boundary for AdaptiveAvgPool2d, but is
-not graph-safe for arbitrary models. It cannot be combined with the strided
-`cpp_op_context=True` path.
+This path keeps eager tensors in dense/strided layout, which is safe for models
+containing residual adds, concatenation, resizing, splitting, or other ordinary
+PyTorch tensor operations.
 
 By default, adjacent Conv2d+BatchNorm2d and Linear+BatchNorm pairs are folded
 before replacement. Disable these independently with `conv_bn_folding=False`
@@ -216,8 +188,8 @@ nn.ReLU        -> _ODNNReLU
 The replacement modules call functions in `backend.py`. In this demo those
 functions explicitly convert supported tensors to PyTorch MKLDNN tensors so
 Conv2d and Linear dispatch to oneDNN/MKLDNN kernels, then convert the outputs
-back to dense tensors. The separate `weight_prepack=True` path uses
-`torch.utils.mkldnn.to_mkldnn()` to reorder Conv2d and Linear weights once.
+back to dense tensors. The separate `weight_prepack=True` path creates C++
+OpContext wrappers for Conv2d and Linear.
 For a Kunpeng/kblas extension, keep the same frontend and module wrappers but
 replace the backend-specific implementation with registered Kunpeng operators.
 
@@ -227,8 +199,8 @@ Run:
 python example.py
 ```
 
-On Ubuntu/Debian, install the C++ build tools before enabling
-`cpp_op_context=True`:
+On Ubuntu/Debian, install the C++ build tools before using a source checkout
+with `weight_prepack=True`:
 
 ```bash
 sudo apt-get update
@@ -245,11 +217,11 @@ export ODNN_DEMO_CPP_VERBOSE=1
 python example.py
 ```
 
-The default and Python prepack paths remain Python-only. The optional C++
-OpContext path JIT-compiles `csrc/op_context.cpp` into a Linux `.so` on first
-use. This demo mirrors the frontend structure needed for a later backend:
-build a lookup table, replace supported modules, then execute backend-specific
-kernels.
+The default replacement path remains Python-only. The prepack path JIT-compiles
+`csrc/op_context.cpp` into a Linux `.so` on first use when a prebuilt `_C`
+extension is unavailable. This demo mirrors the frontend structure needed for a
+later backend: build a lookup table, replace supported modules, then execute
+backend-specific kernels.
 
 ## Building Release Wheels
 

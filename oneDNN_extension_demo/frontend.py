@@ -10,11 +10,8 @@ from torch.nn.utils.fusion import fuse_linear_bn_eval
 
 from .modules import _ODNNBatchNorm2d, _ODNNConv2d, _ODNNLinear, _ODNNReLU
 from .prepack_modules import (
-    _ODNNMKLDNNBatchNorm2d,
-    _ODNNMKLDNNReLU,
     _ODNNPrepackedConv2d,
     _ODNNPrepackedLinear,
-    _ODNNDenseBoundary,
 )
 from .graph_mode import GraphCaptureLite, _RunMethod
 from .prepack_context import ODNNConvolutionOpContext
@@ -32,13 +29,6 @@ WEIGHT_PREPACK_REPLACEMENT_TABLE: Dict[Type[nn.Module], Type[nn.Module]] = {
     nn.Linear: _ODNNPrepackedLinear,
 }
 
-MKLDNN_LAYOUT_REPLACEMENT_TABLE: Dict[Type[nn.Module], Type[nn.Module]] = {
-    **WEIGHT_PREPACK_REPLACEMENT_TABLE,
-    nn.BatchNorm2d: _ODNNMKLDNNBatchNorm2d,
-    nn.ReLU: _ODNNMKLDNNReLU,
-    nn.AdaptiveAvgPool2d: _ODNNDenseBoundary,
-}
-
 
 @dataclass
 class OptimizeReport:
@@ -52,8 +42,6 @@ class OptimizeReport:
     conv_bn_folding: bool = True
     linear_bn_folding: bool = True
     sample_input: bool = False
-    cpp_op_context: bool = False
-    preserve_mkldnn_layout: bool = False
     native_dnnl_contexts: int = 0
     packed_weight_bytes: int = 0
     graph_mode: bool = False
@@ -70,8 +58,6 @@ def optimize(
     conv_bn_folding: bool = True,
     linear_bn_folding: bool = True,
     sample_input=None,
-    cpp_op_context: bool = False,
-    preserve_mkldnn_layout: bool = False,
     dtype=None,
     graph_mode: bool = False,
     return_report: bool = False,
@@ -79,14 +65,9 @@ def optimize(
     """Apply layout conversion and optional oneDNN module replacement.
 
     weight_prepack=False keeps the original explicit backend path.
-    weight_prepack=True converts Conv2d and Linear modules with
-    torch.utils.mkldnn.to_mkldnn() during optimize(), so their weights are
-    reordered once and reused by subsequent forward calls.
-
-    preserve_mkldnn_layout=True is an experimental sequential-model mode that
-    keeps opaque MKLDNN activations across supported modules. Leave it disabled
-    for models with residual additions, concatenation, resize, or other dense
-    tensor graph operations.
+    weight_prepack=True replaces Conv2d and Linear modules with wrappers that
+    create C++ OpContext objects during optimize(), so packed weights and
+    execution metadata are reused by subsequent forward calls.
 
     conv_bn_folding=True folds Conv+BatchNorm pairs in eval mode before module
     replacement and optional prepack warmup.
@@ -103,17 +84,6 @@ def optimize(
         raise RuntimeError("PyTorch was built without MKLDNN/oneDNN support.")
     if weight_prepack and not replace_modules:
         raise ValueError("weight_prepack=True requires replace_modules=True.")
-    if cpp_op_context and not weight_prepack:
-        raise ValueError("cpp_op_context=True requires weight_prepack=True.")
-    if preserve_mkldnn_layout and not weight_prepack:
-        raise ValueError(
-            "preserve_mkldnn_layout=True requires weight_prepack=True."
-        )
-    if preserve_mkldnn_layout and cpp_op_context:
-        raise ValueError(
-            "preserve_mkldnn_layout=True is incompatible with the strided "
-            "C++ OpContext path."
-        )
 
     opt_model = model if inplace else copy.deepcopy(model)
     opt_model.eval()
@@ -132,20 +102,15 @@ def optimize(
 
     stats = {"total": 0, "replaced": 0}
     if replace_modules:
-        if weight_prepack:
-            replacement_table = (
-                MKLDNN_LAYOUT_REPLACEMENT_TABLE
-                if preserve_mkldnn_layout
-                else WEIGHT_PREPACK_REPLACEMENT_TABLE
-            )
-        else:
-            replacement_table = MODULE_REPLACEMENT_TABLE
+        replacement_table = (
+            WEIGHT_PREPACK_REPLACEMENT_TABLE
+            if weight_prepack
+            else MODULE_REPLACEMENT_TABLE
+        )
         opt_model = _replace_modules(
             opt_model,
             channels_last=channels_last,
             replacement_table=replacement_table,
-            cpp_op_context=cpp_op_context,
-            preserve_mkldnn_layout=preserve_mkldnn_layout,
             stats=stats,
         )
     else:
@@ -156,7 +121,7 @@ def optimize(
 
     native_contexts = 0
     packed_weight_bytes = 0
-    if cpp_op_context:
+    if weight_prepack:
         for child in opt_model.modules():
             if isinstance(child, ODNNConvolutionOpContext):
                 if child.uses_native_dnnl():
@@ -188,8 +153,6 @@ def optimize(
         conv_bn_folding=conv_bn_folding,
         linear_bn_folding=linear_bn_folding,
         sample_input=sample_input is not None,
-        cpp_op_context=cpp_op_context,
-        preserve_mkldnn_layout=preserve_mkldnn_layout,
         native_dnnl_contexts=native_contexts,
         packed_weight_bytes=packed_weight_bytes,
         graph_mode=graph_mode,
@@ -198,8 +161,6 @@ def optimize(
             "native-oneDNN-prepack"
             if native_contexts
             else "ATen-strided-cpp-context"
-            if cpp_op_context
-            else "oneDNN-prepack"
             if weight_prepack
             else "oneDNN-demo"
         ),
@@ -216,8 +177,6 @@ def _replace_modules(
     *,
     channels_last: bool,
     replacement_table,
-    cpp_op_context: bool,
-    preserve_mkldnn_layout: bool,
     stats,
 ) -> nn.Module:
     stats["total"] += 1
@@ -229,12 +188,10 @@ def _replace_modules(
                 return replacement_cls(
                     module,
                     channels_last=channels_last,
-                    cpp_op_context=cpp_op_context,
-                    preserve_mkldnn_layout=preserve_mkldnn_layout,
                 )
             return replacement_cls(module, channels_last=channels_last)
         if replacement_cls is _ODNNPrepackedLinear:
-            return replacement_cls(module, cpp_op_context=cpp_op_context)
+            return replacement_cls(module)
         return replacement_cls(module)
 
     for name, child in list(module.named_children()):
@@ -245,8 +202,6 @@ def _replace_modules(
                 child,
                 channels_last=channels_last,
                 replacement_table=replacement_table,
-                cpp_op_context=cpp_op_context,
-                preserve_mkldnn_layout=preserve_mkldnn_layout,
                 stats=stats,
             ),
         )

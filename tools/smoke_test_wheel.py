@@ -26,7 +26,6 @@ def main():
         optimized, report = odnn.optimize(
             model,
             weight_prepack=True,
-            cpp_op_context=True,
             sample_input=sample,
             return_report=True,
         )

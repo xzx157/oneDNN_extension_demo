@@ -82,22 +82,6 @@ def create_ipex_prepack_model(model, sample_input):
         return None, f"{type(error).__name__}: {error}"
 
 
-def create_cpp_prepack_model(model, sample_input):
-    try:
-        return (
-            odnn.optimize(
-                model,
-                channels_last=True,
-                weight_prepack=True,
-                sample_input=sample_input,
-                cpp_op_context=True,
-            ),
-            None,
-        )
-    except (ImportError, OSError, RuntimeError) as error:
-        return None, f"{type(error).__name__}: {error}"
-
-
 def collect_cpp_runtime_stats(model):
     stats = {"native_runs": 0, "fallback_runs": 0, "native_hit_rate": 0.0}
     for module in model.modules():
@@ -133,16 +117,19 @@ def main():
         replace_modules=False,
         return_report=True,
     )
-    prepacked_model, prepacked_report = odnn.optimize(
-        model,
-        channels_last=True,
-        weight_prepack=True,
-        sample_input=x_channels_last,
-        return_report=True,
-    )
-    cpp_prepacked_model, cpp_prepacked_error = create_cpp_prepack_model(
-        model, x_channels_last
-    )
+    try:
+        prepacked_model, prepacked_report = odnn.optimize(
+            model,
+            channels_last=True,
+            weight_prepack=True,
+            sample_input=x_channels_last,
+            return_report=True,
+        )
+        prepacked_error = None
+    except (ImportError, OSError, RuntimeError) as error:
+        prepacked_model = None
+        prepacked_report = None
+        prepacked_error = f"{type(error).__name__}: {error}"
     ipex_o1_model, ipex_o1_error = create_ipex_o1_model(model, x_channels_last)
     ipex_prepack_model, ipex_prepack_error = create_ipex_prepack_model(
         model, x_channels_last
@@ -154,11 +141,8 @@ def main():
 
     with torch.inference_mode():
         out_channels_last = channels_last_model(x_channels_last)
-        out_prepacked = prepacked_model(x_channels_last)
-        out_cpp_prepacked = (
-            cpp_prepacked_model(x_channels_last)
-            if cpp_prepacked_model is not None
-            else None
+        out_prepacked = (
+            prepacked_model(x_channels_last) if prepacked_model is not None else None
         )
         out = opt_model(x)
         out_nchw = opt_model_nchw(x)
@@ -173,10 +157,9 @@ def main():
 
     baseline_ms = benchmark(model, x)
     channels_last_ms = benchmark(channels_last_model, x_channels_last)
-    prepacked_ms = benchmark(prepacked_model, x_channels_last)
-    cpp_prepacked_ms = (
-        benchmark(cpp_prepacked_model, x_channels_last)
-        if cpp_prepacked_model is not None
+    prepacked_ms = (
+        benchmark(prepacked_model, x_channels_last)
+        if prepacked_model is not None
         else None
     )
     odnn_ms = benchmark(opt_model, x)
@@ -200,18 +183,17 @@ def main():
         "Max abs diff channels-last only:",
         (ref - out_channels_last).abs().max().item(),
     )
-    print("Max abs diff weight-prepack:", (ref - out_prepacked).abs().max().item())
-    if out_cpp_prepacked is not None:
+    if out_prepacked is not None:
         print(
             "Max abs diff C++ OpContext:",
-            (ref - out_cpp_prepacked).abs().max().item(),
+            (ref - out_prepacked).abs().max().item(),
         )
         print(
             "C++ OpContext runtime stats:",
-            collect_cpp_runtime_stats(cpp_prepacked_model),
+            collect_cpp_runtime_stats(prepacked_model),
         )
     else:
-        print("C++ OpContext skipped:", cpp_prepacked_error)
+        print("C++ OpContext skipped:", prepacked_error)
     print("Max abs diff:", (ref - out).abs().max().item())
     print("Max abs diff without channels_last:", (ref - out_nchw).abs().max().item())
     if out_ipex_o1 is not None:
@@ -228,9 +210,8 @@ def main():
     print("Benchmark input:", tuple(x.shape))
     print(f"Baseline PyTorch: {baseline_ms:.3f} ms/iter")
     report_speedup("Channels-last only", baseline_ms, channels_last_ms)
-    report_speedup("Weight prepack + channels_last", baseline_ms, prepacked_ms)
-    if cpp_prepacked_ms is not None:
-        report_speedup("C++ OpContext + sample_input", baseline_ms, cpp_prepacked_ms)
+    if prepacked_ms is not None:
+        report_speedup("C++ OpContext + sample_input", baseline_ms, prepacked_ms)
     report_speedup("ODNN explicit MKLDNN + channels_last", baseline_ms, odnn_ms)
     report_speedup("ODNN explicit MKLDNN no channels_last", baseline_ms, odnn_nchw_ms)
     if ipex_o1_ms is not None:
