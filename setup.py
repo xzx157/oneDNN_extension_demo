@@ -117,7 +117,7 @@ def _native_build_config():
 if BUILD_NATIVE:
     ext_modules, cmdclass, torch_requirement = _native_build_config()
 else:
-    ext_modules, cmdclass, torch_requirement = [], {}, "torch>=2.0"
+    ext_modules, cmdclass, torch_requirement = [], {}, "torch>=2.8,<2.9"
 
 
 setup(

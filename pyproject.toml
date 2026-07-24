@@ -25,7 +25,12 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
-dynamic = ["version", "dependencies"]
+dynamic = ["version"]
+
+dependencies = [
+    "torch>=2.8,<2.9",
+    "typing-extensions>=4.0",
+]
 
 [project.optional-dependencies]
 dev = [
@@ -42,7 +47,14 @@ Repository = "https://github.com/xzx157/oneDNN_extension_demo"
 include = ["oneDNN_extension_demo*"]
 
 [tool.setuptools.package-data]
-oneDNN_extension_demo = ["csrc/*.cpp", "csrc/*.h", "csrc/kernels/*.cpp"]
+oneDNN_extension_demo = [
+    "csrc/*.cpp",
+    "csrc/*.h",
+    "csrc/kernels/*.cpp",
+    "libdnnl.so",
+    "libdnnl.so.3",
+    "libdnnl.so.3.8",
+]
 
 [tool.cibuildwheel]
 build = "cp39-manylinux_* cp310-manylinux_* cp311-manylinux_* cp312-manylinux_*"
@@ -52,4 +64,4 @@ manylinux-aarch64-image = "manylinux_2_28"
 test-command = "env -u LD_LIBRARY_PATH python {project}/tools/smoke_test_wheel.py"
 
 [tool.cibuildwheel.linux]
-repair-wheel-command = "auditwheel repair --exclude libtorch.so --exclude libtorch_cpu.so --exclude libtorch_python.so --exclude libtorch_global_deps.so --exclude libc10.so --exclude libdnnl.so.3 -w {dest_dir} {wheel}"
+repair-wheel-command = "auditwheel repair --exclude libtorch.so --exclude libtorch_cpu.so --exclude libtorch_python.so --exclude libtorch_global_deps.so --exclude libc10.so -w {dest_dir} {wheel}"
