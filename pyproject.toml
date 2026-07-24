@@ -52,4 +52,4 @@ manylinux-aarch64-image = "manylinux_2_28"
 test-command = "env -u LD_LIBRARY_PATH python {project}/tools/smoke_test_wheel.py"
 
 [tool.cibuildwheel.linux]
-repair-wheel-command = "auditwheel repair --exclude libtorch.so --exclude libtorch_cpu.so --exclude libtorch_python.so --exclude libtorch_global_deps.so --exclude libc10.so -w {dest_dir} {wheel}"
+repair-wheel-command = "auditwheel repair --exclude libtorch.so --exclude libtorch_cpu.so --exclude libtorch_python.so --exclude libtorch_global_deps.so --exclude libc10.so --exclude libdnnl.so.3 -w {dest_dir} {wheel}"
